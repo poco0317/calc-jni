@@ -26,7 +26,7 @@ jobs:
         run: cd main && ls
 
       - name: Make
-        run: make all
+        run: pwd && make build
 
       - name: Upload
         uses: softprops/action-gh-release@v1
@@ -49,7 +49,7 @@ jobs:
         run: cd main && ls
 
       - name: Make
-        run: make all
+        run: pwd && make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
