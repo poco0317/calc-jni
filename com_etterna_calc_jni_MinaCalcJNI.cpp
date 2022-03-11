@@ -1,5 +1,3 @@
-
-
 #include "MinaCalc/MinaCalc.h"
 #include <jni.h>
 

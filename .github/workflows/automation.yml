@@ -1,0 +1,50 @@
+name: C/C++ CI
+
+on:
+  push:
+    branches: [ master ]
+
+jobs:
+  linuxflow:
+    runs-on: ubuntu-18.04
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        path: main
+    - uses: actions/setup-java@v2
+      with:
+        distributions: 'adopt'
+        java-version: '11'
+        
+    - name: configure
+    run: ./configure
+
+    - name: make
+    run: make lin
+
+    - name: upload
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{github.workspace}}/MinaCalcJNI.so
+
+  winflow:
+    runs-on: windows-2019
+    steps:
+    - uses: actions/checkout@v2
+      with:
+        path: main
+    - uses: actions/setup-java@v2
+      with:
+        distributions: 'adopt'
+        java-version: '11'
+
+    - name: configure
+    run: ./configure
+
+    - name: make
+    run: make win
+
+    - name: upload
+      uses: softprops/action-gh-release@v1
+      with:
+        files: ${{github.workspace}}/MinaCalcJNI.dll
