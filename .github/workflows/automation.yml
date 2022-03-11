@@ -29,7 +29,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: Linux x64 SO
-          path: ${{github.workspace}}/MinaCalcJNI.so
+          path: ${{github.workspace}}/master/MinaCalcJNI.so
 
   windows:
     name: Windows x64
@@ -50,4 +50,4 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: Windows x64 DLL
-          path: ${{github.workspace}}/MinaCalcJNI.dll
+          path: ${{github.workspace}}/master/MinaCalcJNI.dll
