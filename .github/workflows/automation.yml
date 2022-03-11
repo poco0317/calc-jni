@@ -17,10 +17,10 @@ jobs:
           java-version: '11'
 
       - name: configure
-      run: ./configure
+        run: ./configure
 
       - name: make
-      run: make lin
+        run: make lin
 
       - name: upload
         uses: softprops/action-gh-release@v1
@@ -40,10 +40,10 @@ jobs:
           java-version: '11'
 
       - name: configure
-      run: ./configure
+        run: ./configure
 
       - name: make
-      run: make win
+        run: make win
 
       - name: upload
         uses: softprops/action-gh-release@v1
