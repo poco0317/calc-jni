@@ -4,9 +4,7 @@
 
 #ifndef _Included_com_etterna_calc_jni_MinaCalcJNI
 #define _Included_com_etterna_calc_jni_MinaCalcJNI
-#ifdef __cplusplus
 extern "C" {
-#endif
 /*
  * Class:     com_etterna_calc_jni_MinaCalcJNI
  * Method:    test
@@ -15,7 +13,5 @@ extern "C" {
 JNIEXPORT jstring JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_test
   (JNIEnv *, jobject);
 
-#ifdef __cplusplus
 }
-#endif
 #endif
