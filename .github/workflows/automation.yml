@@ -23,7 +23,7 @@ jobs:
           java-version: '11'
 
       - name: huh
-        run: pwd && ls
+        run: cd main
 
       - name: Make
         run: make clean && make all
@@ -44,6 +44,9 @@ jobs:
         with:
           distribution: 'adopt'
           java-version: '11'
+
+      - name: huh
+        run: cd main
 
       - name: Make
         run: make clean && make all
