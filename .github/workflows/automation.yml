@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          path: main
+          path: master
       - uses: actions/setup-java@v2
         with:
           distribution: 'adopt'
@@ -39,7 +39,7 @@ jobs:
     steps:
       - uses: actions/checkout@v2
         with:
-          path: main
+          path: master
       - uses: actions/setup-java@v2
         with:
           distribution: 'adopt'
