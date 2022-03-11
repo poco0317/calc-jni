@@ -3,6 +3,12 @@ on:
   push:
     branches: [master]
 
+env:
+  CXX: g++
+  CXXFLAGS: -g
+  NATIVE: on
+  TUNE: generic
+
 jobs:
   linux-x64:
     name: Linux x64
@@ -15,9 +21,6 @@ jobs:
         with:
           distribution: 'adopt'
           java-version: '11'
-
-      - name: Configure
-        run: ./configure
 
       - name: Make
         run: make lin
@@ -38,9 +41,6 @@ jobs:
         with:
           distribution: 'adopt'
           java-version: '11'
-
-      - name: Configure
-        run: ./configure
 
       - name: Make
         run: make win
