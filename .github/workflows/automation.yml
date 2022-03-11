@@ -26,9 +26,10 @@ jobs:
         run: cd master && make
 
       - name: Upload
-        uses: softprops/action-gh-release@v1
+        uses: actions/upload-artifact@v2
         with:
-          files: ${{github.workspace}}/MinaCalcJNI.so
+          name: Linux x64 SO
+          path: ${{github.workspace}}/MinaCalcJNI.so
 
   windows:
     name: Windows x64
@@ -46,6 +47,7 @@ jobs:
         run: cd master && make
 
       - name: Upload
-        uses: softprops/action-gh-release@v1
+        uses: actions/upload-artifact@v2
         with:
-          files: ${{github.workspace}}/MinaCalcJNI.dll
+          name: Windows x64 DLL
+          path: ${{github.workspace}}/MinaCalcJNI.dll
