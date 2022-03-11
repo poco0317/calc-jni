@@ -23,7 +23,7 @@ jobs:
           java-version: '11'
 
       - name: Make
-        run: make lin
+        run: make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
@@ -43,7 +43,7 @@ jobs:
           java-version: '11'
 
       - name: Make
-        run: make win
+        run: make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
