@@ -5,7 +5,8 @@ on:
     branches: [ master ]
 
 jobs:
-  linuxflow:
+  linux-x64:
+    name: Linux x64
     runs-on: ubuntu-18.04
     steps:
     - uses: actions/checkout@v2
@@ -15,7 +16,7 @@ jobs:
       with:
         distributions: 'adopt'
         java-version: '11'
-        
+
     - name: configure
     run: ./configure
 
@@ -26,8 +27,9 @@ jobs:
       uses: softprops/action-gh-release@v1
       with:
         files: ${{github.workspace}}/MinaCalcJNI.so
-
-  winflow:
+  
+  windows:
+    name: Windows x64
     runs-on: windows-2019
     steps:
     - uses: actions/checkout@v2
