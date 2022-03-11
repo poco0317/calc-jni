@@ -23,7 +23,7 @@ jobs:
           java-version: '11'
 
       - name: Make
-        run: make
+        run: cd master && make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
@@ -43,7 +43,7 @@ jobs:
           java-version: '11'
 
       - name: Make
-        run: make
+        run: cd master && make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
