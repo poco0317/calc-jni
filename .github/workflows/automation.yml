@@ -22,11 +22,8 @@ jobs:
           distribution: 'adopt'
           java-version: '11'
 
-      - name: huh
-        run: cd main && ls
-
       - name: Make
-        run: pwd && make build
+        run: make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
@@ -45,11 +42,8 @@ jobs:
           distribution: 'adopt'
           java-version: '11'
 
-      - name: huh
-        run: cd main && ls
-
       - name: Make
-        run: pwd && make
+        run: make
 
       - name: Upload
         uses: softprops/action-gh-release@v1
