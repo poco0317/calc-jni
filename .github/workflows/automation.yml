@@ -23,10 +23,10 @@ jobs:
           java-version: '11'
 
       - name: huh
-        run: cd main
+        run: cd main && ls
 
       - name: Make
-        run: make clean && make all
+        run: make all
 
       - name: Upload
         uses: softprops/action-gh-release@v1
@@ -46,10 +46,10 @@ jobs:
           java-version: '11'
 
       - name: huh
-        run: cd main
+        run: cd main && ls
 
       - name: Make
-        run: make clean && make all
+        run: make all
 
       - name: Upload
         uses: softprops/action-gh-release@v1
