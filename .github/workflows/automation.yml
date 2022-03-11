@@ -16,13 +16,13 @@ jobs:
           distributions: 'adopt'
           java-version: '11'
 
-      - name: configure
+      - name: Configure
         run: ./configure
 
-      - name: make
+      - name: Make
         run: make lin
 
-      - name: upload
+      - name: Upload
         uses: softprops/action-gh-release@v1
         with:
           files: ${{github.workspace}}/MinaCalcJNI.so
@@ -39,13 +39,13 @@ jobs:
           distributions: 'adopt'
           java-version: '11'
 
-      - name: configure
+      - name: Configure
         run: ./configure
 
-      - name: make
+      - name: Make
         run: make win
 
-      - name: upload
+      - name: Upload
         uses: softprops/action-gh-release@v1
         with:
           files: ${{github.workspace}}/MinaCalcJNI.dll
