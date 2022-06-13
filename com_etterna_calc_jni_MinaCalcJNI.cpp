@@ -24,7 +24,7 @@ JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalc(J
     std::ifstream INFILE(path,
                             std::ios::in | std::ifstream::binary);
     INFILE.seekg(0, std::ios::end);
-    noteinfo.resize(unsigned int(INFILE.tellg() / sizeof(NoteInfo)));
+    noteinfo.resize(static_cast<unsigned int>(INFILE.tellg() / sizeof(NoteInfo)));
     INFILE.seekg(0, std::ios::beg);
     INFILE.read((char*)&noteinfo[0],
                 noteinfo.capacity() * sizeof(NoteInfo));

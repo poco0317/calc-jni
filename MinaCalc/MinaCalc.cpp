@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include <cassert>
+#include <sstream>
 
 using std::max;
 using std::min;
