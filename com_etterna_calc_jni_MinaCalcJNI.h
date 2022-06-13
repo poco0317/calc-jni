@@ -7,11 +7,19 @@
 extern "C" {
 /*
  * Class:     com_etterna_calc_jni_MinaCalcJNI
- * Method:    test
+ * Method:    getCalcVersion
  * Signature: ()Ljava/lang/String;
  */
-JNIEXPORT jstring JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_test
+JNIEXPORT jstring JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_getCalcVersion
   (JNIEnv *, jobject);
+
+/*
+ * Class:     com_etterna_calc_jni_MinaCalcJNI
+ * Method:    minaSDCalc
+ * Signature: (Ljava/lang/String;FF)[F
+ */
+JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalc
+  (JNIEnv *, jobject, jstring, jfloat, jfloat);
 
 }
 #endif
