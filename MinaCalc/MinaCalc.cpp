@@ -253,7 +253,7 @@ StamAdjust(const float x,
 	float avs1;
 	auto avs2 = 0.F;
 	float local_ceil;
-	const auto super_stam_ceil = 1.11F;
+	const auto super_stam_ceil = 1.09F;
 
 	// use this to calculate the mod growth
 	const std::vector<float>* base_diff =
@@ -676,6 +676,13 @@ Calc::Chisel(const float player_skill,
 				}
 			} else if (ss == Skill_JackSpeed) {
 				// no pattern mods atm
+			} else if (ss == Skill_Chordjack) {
+				for (auto i = 0; i < numitv; ++i) {
+					debugTotalPatternMod.at(hand).at(ss).at(i) =
+					  base_adj_diff.at(hand).at(ss).at(i) /
+					  //init_base_diff_vals.at(hand)[CJBase].at(i);
+					  init_base_diff_vals.at(hand)[NPSBase].at(i);
+				}
 			} else {
 				// everything else uses nps base
 				for (auto i = 0; i < numitv; ++i) {
@@ -716,15 +723,16 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		Stream,
 		OHTrill,
 		VOHTrill,
-		// Roll,
+		Roll,
 		Chaos,
 		WideRangeRoll,
 		WideRangeJumptrill,
+		WideRangeJJ,
 		FlamJam,
-		OHJumpMod,
-		Balance,
+		// OHJumpMod,
+		// Balance,
 		// RanMan,
-		WideRangeBalance,
+		// WideRangeBalance,
 	  },
 
 	  // js
@@ -737,12 +745,13 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		TheThing2,
 		WideRangeBalance,
 		WideRangeJumptrill,
+		WideRangeJJ,
 		// WideRangeRoll,
 		// OHTrill,
 		VOHTrill,
+		// Roll,
 		RanMan,
 		FlamJam,
-		// Roll,
 		// WideRangeAnchor,
 	  },
 
@@ -751,12 +760,13 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		HS,
 		OHJumpMod,
 		TheThing,
-		WideRangeAnchor,
+		// WideRangeAnchor,
 		WideRangeRoll,
 		WideRangeJumptrill,
+		WideRangeJJ,
 		OHTrill,
 		VOHTrill,
-		// Roll
+		// Roll,
 		// RanMan,
 		FlamJam,
 	  	HSDensity,
@@ -772,11 +782,13 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 	  {
 		CJ,
 		// CJDensity,
-		CJOHJump, // SQRTD BELOW
+		CJOHJump,
 		CJOHAnchor,
 		VOHTrill,
 		// WideRangeAnchor,
 	  	FlamJam, // you may say, why? why not?
+		// WideRangeJJ,
+		WideRangeJumptrill,
 	  },
 
 	  // tech, duNNO wat im DOIN
@@ -784,10 +796,11 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		OHTrill,
 		VOHTrill,
 		Balance,
-		// Roll,
+		Roll,
 		OHJumpMod,
 		//Chaos,
 		WideRangeJumptrill,
+		WideRangeJJ,
 		WideRangeBalance,
 		WideRangeRoll,
 		FlamJam,
@@ -877,14 +890,21 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 				case Skill_JackSpeed:
 					break;
 				case Skill_Chordjack:
+					/*
+					*adj_diff =
+					  calc.init_base_diff_vals.at(hand).at(CJBase).at(i) *
+					  basescalers.at(Skill_Chordjack) *
+					  pmod_product_cur_interval[Skill_Chordjack];
+					// we leave stam_base alone here, still based on nps
+					*/
 					break;
 				case Skill_Technical:
 					*adj_diff =
 					  calc.init_base_diff_vals.at(hand).at(TechBase).at(i) *
 					  pmod_product_cur_interval.at(ss) * basescalers.at(ss) /
-					  //max<float>(
-					  //fastpow(calc.pmod_vals.at(hand).at(CJ).at(i), 2.F),
-					  //1.F) /
+					  max<float>(
+						fastpow(calc.pmod_vals.at(hand).at(CJ).at(i), 2.F),
+						1.F) /
 					  fastsqrt(calc.pmod_vals.at(hand).at(OHJumpMod).at(i));
 					break;
 				default:
@@ -956,7 +976,7 @@ MinaSDCalc(const std::vector<NoteInfo>& NoteInfo, Calc* calc) -> MinaSD
 	return allrates;
 }
 
-int mina_calc_version = 477;
+int mina_calc_version = 492;
 auto
 GetCalcVersion() -> int
 {

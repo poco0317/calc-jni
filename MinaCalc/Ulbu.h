@@ -29,6 +29,7 @@
 #include "Dependent/HD_PatternMods/WideRangeBalance.h"
 #include "Dependent/HD_PatternMods/WideRangeRoll.h"
 #include "Dependent/HD_PatternMods/WideRangeJumptrill.h"
+#include "Dependent/HD_PatternMods/WideRangeJJ.h"
 #include "Dependent/HD_PatternMods/WideRangeAnchor.h"
 #include "Dependent/HD_PatternMods/RunningMan.h"
 
@@ -93,6 +94,7 @@ struct TheGreatBazoinkazoinkInTheSky
 	WideRangeBalanceMod _wrb;
 	WideRangeRollMod _wrr;
 	WideRangeJumptrillMod _wrjt;
+	WideRangeJJMod _wrjj;
 	WideRangeAnchorMod _wra;
 	FlamJamMod _fj;
 	TheThingLookerFinderThing _tt;
@@ -216,7 +218,7 @@ struct TheGreatBazoinkazoinkInTheSky
 	/// an example, actually all sequencing should be done in objects
 	/// following rm_sequencing's template and be stored in mhi, and then
 	/// passed to whichever mods need them, but that's for later
-	void handle_row_dependent_pattern_advancement()
+	void handle_row_dependent_pattern_advancement(const float& row_time)
 	{
 		_ohj.advance_sequencing(_mhi->_ct, _mhi->_bt);
 		_cjohj.advance_sequencing(_mhi->_ct, _mhi->_bt);
@@ -225,7 +227,6 @@ struct TheGreatBazoinkazoinkInTheSky
 		_oht.advance_sequencing(_mhi->_mt, _seq._mw_any_ms);
 		_voht.advance_sequencing(_mhi->_mt, _seq._mw_any_ms);
 		_rm.advance_sequencing(_mhi->_ct, _mhi->_bt, _mhi->_mt, _seq._as);
-
 		_wrr.advance_sequencing(_mhi->_bt,
 								_mhi->_mt,
 								_mhi->_last_mt,
@@ -233,8 +234,9 @@ struct TheGreatBazoinkazoinkInTheSky
 								_seq.get_sc_ms_now(_mhi->_ct));
 		_wrjt.advance_sequencing(
 		  _mhi->_bt, _mhi->_mt, _mhi->_last_mt, _seq._mw_any_ms);
+		_wrjj.advance_sequencing(_mhi->_ct, row_time);
 		_ch.advance_sequencing(_seq._mw_any_ms);
-		_roll.advance_sequencing(_mhi->_mt, _seq);
+		_roll.advance_sequencing(_mhi->_ct, row_time);
 	}
 
 	void setup_dependent_mods()
@@ -245,6 +247,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		_rm.setup();
 		_wrr.setup();
 		_wrjt.setup();
+		_wrjj.setup();
 		_wrb.setup();
 		_wra.setup();
 	}
@@ -263,7 +266,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		PatternMods::set_dependent(
 		  hand, _bal._pmod, _bal(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
-		  hand, _roll._pmod, _roll(_mitvhi._itvhi, _seq), itv, _calc);
+		  hand, _roll._pmod, _roll(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
 		  hand, _ch._pmod, _ch(_mitvhi._itvhi.get_taps_nowi()), itv, _calc);
 		PatternMods::set_dependent(
@@ -274,6 +277,8 @@ struct TheGreatBazoinkazoinkInTheSky
 		  hand, _wrr._pmod, _wrr(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
 		  hand, _wrjt._pmod, _wrjt(_mitvhi._itvhi), itv, _calc);
+		PatternMods::set_dependent(
+		  hand, _wrjj._pmod, _wrjj(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
 		  hand, _wra._pmod, _wra(_mitvhi._itvhi, _seq._as), itv, _calc);
 	}
@@ -294,6 +299,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		_rm.full_reset();
 		_wrr.full_reset();
 		_wrjt.full_reset();
+		_wrjj.full_reset();
 		_wrb.full_reset();
 		_wra.full_reset();
 
@@ -332,7 +338,8 @@ struct TheGreatBazoinkazoinkInTheSky
 	void update_sequenced_base_diffs(const col_type& ct,
 									 const int& itv,
 									 const int& jack_counter,
-									 const float& row_time)
+									 const float& row_time,
+									 const float& any_ms)
 	{
 		auto thing =
 		  std::pair{ row_time,
@@ -345,6 +352,9 @@ struct TheGreatBazoinkazoinkInTheSky
 		// _between either column_ for _this row_
 		_calc.jack_diff.at(hand).push_back(thing);
 
+		// chordjack updates
+		_diffz._cj.advance_base(any_ms, _calc);
+
 		// tech updates with a convoluted mess of garbage
 		_diffz._tc.advance_base(_seq, ct, _calc);
 		_diffz._tc.advance_rm_comp(_rm.get_highest_anchor_difficulty());
@@ -355,6 +365,9 @@ struct TheGreatBazoinkazoinkInTheSky
 		// this is no longer done for intervals, but per row, in the row
 		// loop _calc->soap.at(hand)[JackBase].at(itv) =
 		// _diffz._jk.get_itv_diff();
+
+		_calc.init_base_diff_vals.at(hand)[CJBase].at(itv) =
+		  _diffz._cj.get_itv_diff(_calc);
 
 		// kinda jank but includes a weighted average vs nps base to prevent
 		// really silly stuff from becoming outliers
@@ -389,6 +402,8 @@ struct TheGreatBazoinkazoinkInTheSky
 			// maybe we _don't_ want this smoothed before the tech pass? and so
 			// it could be constructed parallel? NEEDS TEST
 			Smooth(_calc.init_base_diff_vals.at(hand).at(NPSBase), 0.F, _calc.numitv);
+			MSSmooth(
+			  _calc.init_base_diff_vals.at(hand).at(MSBase), 0.F, _calc.numitv);
 
 			for (auto itv = 0; itv < _calc.numitv; ++itv) {
 				auto jack_counter = 0;
@@ -407,6 +422,9 @@ struct TheGreatBazoinkazoinkInTheSky
 					// assert(any_ms > 0.F);
 
 					ct = determine_col_type(row_notes, ids);
+
+					// cj must always update
+					_diffz._cj.update_flags(row_notes, row_count);
 
 					// handle any special cases that need to be executed on
 					// empty rows for this hand here before moving on, aside
@@ -434,14 +452,14 @@ struct TheGreatBazoinkazoinkInTheSky
 					_mitvhi._itvhi.set_col_taps(ct);
 
 					// advance sequencing for all hand dependent mods
-					handle_row_dependent_pattern_advancement();
+					handle_row_dependent_pattern_advancement(row_time);
 
 					/* jackspeed, and tech use various adjust ms bases that
 					 * are sequenced here, meaning they are order dependent
 					 * (jack might not be for the moment actually) nps base
 					 * is still calculated in the old way */
 					update_sequenced_base_diffs(
-					  ct, itv, jack_counter, row_time);
+					  ct, itv, jack_counter, row_time, any_ms);
 					++jack_counter;
 
 					// only ohj uses this atm (and probably into the future)
@@ -462,6 +480,7 @@ struct TheGreatBazoinkazoinkInTheSky
 				handle_dependent_interval_end(itv);
 			}
 			PatternMods::run_dependent_smoothing_pass(_calc.numitv, _calc);
+			//Smooth(_calc.init_base_diff_vals.at(hand).at(CJBase), 0.F, _calc.numitv);
 
 			// ok this is pretty jank LOL, just increment the hand index
 			// when we finish left hand
