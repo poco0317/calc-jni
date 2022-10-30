@@ -42,6 +42,7 @@
 #include "SequencedBaseDiffCalc.h"
 
 #include <cmath>
+#include <sstream>
 
 /** I am ulbu, the great bazoinkazoink in the sky, and ulbu does everything, for
  * ulbu is all. Praise ulbu. */
