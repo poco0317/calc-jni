@@ -9,7 +9,6 @@
 #include <string>
 #include <utility>
 #include <cassert>
-#include <sstream>
 
 using std::max;
 using std::min;
@@ -213,10 +212,13 @@ Calc::CalcMain(const std::vector<NoteInfo>& NoteInfo,
 			highest_final_ssv = output[i];
 		}
 	}
-	if (highest_final_ss == Skill_JackSpeed || highest_final_ss == Skill_Chordjack)
-		grindscaler = fastsqrt(grindscaler);
-	for (auto& ssv : output)
-		ssv *= grindscaler;
+	if (ssr) {
+		if (highest_final_ss == Skill_JackSpeed ||
+			highest_final_ss == Skill_Chordjack)
+			grindscaler = fastsqrt(grindscaler);
+		for (auto& ssv : output)
+			ssv *= grindscaler;
+	}
 	return output;
 }
 
@@ -427,6 +429,8 @@ CalcInternal(float& gotpoints,
 	auto pointloss_pow_val = 1.7F;
 	if (ss == Skill_Chordjack) {
 		pointloss_pow_val = 1.7F;
+	} else if (ss == Skill_Technical) {
+		pointloss_pow_val = 2.F;
 	}
 
 	// i don't like the copypasta either but the boolchecks where
@@ -750,6 +754,7 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		// OHTrill,
 		VOHTrill,
 		// Roll,
+		RollJS,
 		RanMan,
 		FlamJam,
 		// WideRangeAnchor,
@@ -798,13 +803,14 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		Balance,
 		Roll,
 		OHJumpMod,
-		//Chaos,
+		Chaos,
 		WideRangeJumptrill,
 		WideRangeJJ,
 		WideRangeBalance,
 		WideRangeRoll,
 		FlamJam,
-		//RanMan,
+		RanMan,
+		Minijack,
 		// WideRangeAnchor,
 		TheThing,
 		TheThing2,
@@ -976,7 +982,7 @@ MinaSDCalc(const std::vector<NoteInfo>& NoteInfo, Calc* calc) -> MinaSD
 	return allrates;
 }
 
-int mina_calc_version = 492;
+int mina_calc_version = 500;
 auto
 GetCalcVersion() -> int
 {

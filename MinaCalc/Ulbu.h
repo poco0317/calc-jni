@@ -22,6 +22,7 @@
 #include "Dependent/HD_PatternMods/CJOHJ.h"
 #include "Dependent/HD_PatternMods/Balance.h"
 #include "Dependent/HD_PatternMods/Roll.h"
+#include "Dependent/HD_PatternMods/RollJS.h"
 #include "Dependent/HD_PatternMods/OHT.h"
 #include "Dependent/HD_PatternMods/VOHT.h"
 #include "Dependent/HD_PatternMods/Chaos.h"
@@ -31,6 +32,7 @@
 #include "Dependent/HD_PatternMods/WideRangeJumptrill.h"
 #include "Dependent/HD_PatternMods/WideRangeJJ.h"
 #include "Dependent/HD_PatternMods/WideRangeAnchor.h"
+#include "Dependent/HD_PatternMods/Minijack.h"
 #include "Dependent/HD_PatternMods/RunningMan.h"
 
 // they're useful sometimes
@@ -85,12 +87,14 @@ struct TheGreatBazoinkazoinkInTheSky
 	OHJumpModGuyThing _ohj;
 	CJOHJumpMod _cjohj;
 	RollMod _roll;
+	RollJSMod _rolljs;
 	BalanceMod _bal;
 	OHTrillMod _oht;
 	VOHTrillMod _voht;
 	ChaosMod _ch;
 	CJOHAnchorMod _chain;
 	RunningManMod _rm;
+	MinijackMod _mj;
 	WideRangeBalanceMod _wrb;
 	WideRangeRollMod _wrr;
 	WideRangeJumptrillMod _wrjt;
@@ -108,7 +112,7 @@ struct TheGreatBazoinkazoinkInTheSky
 
 	explicit TheGreatBazoinkazoinkInTheSky(Calc& calc)
 	  : _calc(calc)
-	{		
+	{
 		// setup our data pointers
 		_last_mri = std::make_unique<metaRowInfo>();
 		_mri = std::make_unique<metaRowInfo>();
@@ -237,6 +241,8 @@ struct TheGreatBazoinkazoinkInTheSky
 		_wrjj.advance_sequencing(_mhi->_ct, row_time);
 		_ch.advance_sequencing(_seq._mw_any_ms);
 		_roll.advance_sequencing(_mhi->_ct, row_time);
+		_rolljs.advance_sequencing(_mhi->_ct, row_time);
+		_mj.advance_sequencing(_mhi->_ct, _seq.get_sc_ms_now(_mhi->_ct));
 	}
 
 	void setup_dependent_mods()
@@ -244,6 +250,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		_oht.setup();
 		_voht.setup();
 		_roll.setup();
+		_rolljs.setup();
 		_rm.setup();
 		_wrr.setup();
 		_wrjt.setup();
@@ -268,6 +275,8 @@ struct TheGreatBazoinkazoinkInTheSky
 		PatternMods::set_dependent(
 		  hand, _roll._pmod, _roll(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
+		  hand, _rolljs._pmod, _rolljs(_mitvhi._itvhi), itv, _calc);
+		PatternMods::set_dependent(
 		  hand, _ch._pmod, _ch(_mitvhi._itvhi.get_taps_nowi()), itv, _calc);
 		PatternMods::set_dependent(
 		  hand, _rm._pmod, _rm(_mitvhi._itvhi.get_taps_nowi()), itv, _calc);
@@ -281,6 +290,8 @@ struct TheGreatBazoinkazoinkInTheSky
 		  hand, _wrjj._pmod, _wrjj(_mitvhi._itvhi), itv, _calc);
 		PatternMods::set_dependent(
 		  hand, _wra._pmod, _wra(_mitvhi._itvhi, _seq._as), itv, _calc);
+		PatternMods::set_dependent(
+		  hand, _mj._pmod, _mj(_mitvhi._itvhi), itv, _calc);
 	}
 
 	/// reset any moving windows or values when starting the other hand, this
@@ -293,6 +304,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		_cjohj.full_reset();
 		_bal.full_reset();
 		_roll.full_reset();
+		_rolljs.full_reset();
 		_oht.full_reset();
 		_voht.full_reset();
 		_ch.full_reset();
@@ -302,6 +314,7 @@ struct TheGreatBazoinkazoinkInTheSky
 		_wrjj.full_reset();
 		_wrb.full_reset();
 		_wra.full_reset();
+		_mj.full_reset();
 
 		_seq.full_reset();
 		_mitvhi.zero();
@@ -352,19 +365,44 @@ struct TheGreatBazoinkazoinkInTheSky
 		// _between either column_ for _this row_
 		_calc.jack_diff.at(hand).push_back(thing);
 
+		// debug cv stuff
+		if (_calc.debugmode) {
+			switch (ct) {
+				case col_left:
+					_calc.debugMovingWindowCV.at(hand).at(0).emplace_back(
+					  row_time, _seq.get_mw_sc_ms(ct).get_cv_of_window(4));
+					break;
+				case col_right:
+					_calc.debugMovingWindowCV.at(hand).at(1).emplace_back(
+					  row_time, _seq.get_mw_sc_ms(ct).get_cv_of_window(4));
+					break;
+				case col_ohjump: {
+					_calc.debugMovingWindowCV.at(hand).at(0).emplace_back(
+					  row_time, _seq.get_mw_sc_ms(ct).get_cv_of_window(4));
+					_calc.debugMovingWindowCV.at(hand).at(1).emplace_back(
+					  row_time, _seq.get_mw_sc_ms(ct).get_cv_of_window(4));
+					break;
+				}
+				default:
+					break;
+			}
+		}
+
 		// chordjack updates
 		_diffz._cj.advance_base(any_ms, _calc);
 
 		// tech updates with a convoluted mess of garbage
-		_diffz._tc.advance_base(_seq, ct, _calc);
+		_diffz._tc.advance_base(_seq, ct, _calc, hand, row_time);
 		_diffz._tc.advance_rm_comp(_rm.get_highest_anchor_difficulty());
+		_diffz._tc.advance_jack_comp(_seq._as.get_lowest_jack_ms());
 	}
 
 	void set_sequenced_base_diffs(const int& itv) const
 	{
 		// this is no longer done for intervals, but per row, in the row
-		// loop _calc->soap.at(hand)[JackBase].at(itv) =
-		// _diffz._jk.get_itv_diff();
+		// (calc base anyways)
+		_calc.init_base_diff_vals.at(hand)[JackBase].at(itv) =
+		  _diffz._tc.get_itv_jack_diff();
 
 		_calc.init_base_diff_vals.at(hand)[CJBase].at(itv) =
 		  _diffz._cj.get_itv_diff(_calc);
@@ -396,6 +434,13 @@ struct TheGreatBazoinkazoinkInTheSky
 
 			// arrays are super bug prone with jacks so try vectors for now
 			_calc.jack_diff.at(hand).clear();
+
+			if (_calc.debugmode) {
+				_calc.debugMovingWindowCV.at(hand).fill(
+				  std::vector<std::pair<float, float>>());
+				_calc.debugTechVals.at(hand).clear();
+				_calc.debugTechVals.at(hand).shrink_to_fit();
+			}
 
 			nps::actual_cancer(_calc, hand);
 

@@ -51,6 +51,7 @@ enum CalcPatternMod
 	// CJOHJSeqComp,
 	Balance, // pattern mod (values between 0.9 - ~ 1.1)
 	Roll,	 // pattern mod (values between 0-1)
+	RollJS,
 	OHTrill,
 	VOHTrill,
 	Chaos,
@@ -63,6 +64,7 @@ enum CalcPatternMod
 	TheThing,
 	TheThing2,
 	RanMan,
+	Minijack,
 	// RanLen,
 	// RanAnchLen,
 	// RanAnchLenMod,
@@ -82,7 +84,7 @@ enum CalcDiffValue
 {
 	NPSBase,
 	MSBase,
-	// JackBase,
+	JackBase,
 	CJBase,
 	TechBase,
 	RMABase,
