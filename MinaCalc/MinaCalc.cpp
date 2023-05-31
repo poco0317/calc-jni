@@ -535,7 +535,7 @@ Calc::InitializeHands(const std::vector<NoteInfo>& NoteInfo,
 constexpr float tech_pbm = 1.F;
 constexpr float jack_pbm = 1.0175F;
 constexpr float stream_pbm = 1.01F;
-constexpr float bad_newbie_skillsets_pbm = 1.05F;
+constexpr float bad_newbie_skillsets_pbm = 1.F;
 
 // each skillset should just be a separate calc function [todo]
 auto
@@ -742,11 +742,11 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 	  // js
 	  {
 		JS,
-		OHJumpMod,
-		Chaos,
-		Balance,
-		TheThing,
-		TheThing2,
+		// OHJumpMod,
+		// Chaos,
+		// Balance,
+		// TheThing,
+		// TheThing2,
 		WideRangeBalance,
 		WideRangeJumptrill,
 		WideRangeJJ,
@@ -755,7 +755,7 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		VOHTrill,
 		// Roll,
 		RollJS,
-		RanMan,
+		// RanMan,
 		FlamJam,
 		// WideRangeAnchor,
 	  },
@@ -802,14 +802,14 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 		VOHTrill,
 		Balance,
 		Roll,
-		OHJumpMod,
+		// OHJumpMod,
 		Chaos,
 		WideRangeJumptrill,
 		WideRangeJJ,
 		WideRangeBalance,
 		WideRangeRoll,
 		FlamJam,
-		RanMan,
+		// RanMan,
 		Minijack,
 		// WideRangeAnchor,
 		TheThing,
@@ -874,11 +874,6 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 					*adj_diff /=
 					  fastsqrt(calc.pmod_vals.at(hand).at(OHJumpMod).at(i) * 0.95F);
 
-					*adj_diff *=
-					  min(1.F,
-						  fastsqrt(calc.pmod_vals.at(hand).at(WideRangeRoll).at(i) +
-								   0.1F));
-
 					auto a = *adj_diff;
 					auto b = calc.init_base_diff_vals.at(hand).at(NPSBase).at(i) *
 							 pmod_product_cur_interval[Skill_Handstream];
@@ -909,8 +904,9 @@ Calc::InitAdjDiff(Calc& calc, const int& hand)
 					  calc.init_base_diff_vals.at(hand).at(TechBase).at(i) *
 					  pmod_product_cur_interval.at(ss) * basescalers.at(ss) /
 					  max<float>(
-						fastpow(calc.pmod_vals.at(hand).at(CJ).at(i), 2.F),
-						1.F) /
+						fastpow(calc.pmod_vals.at(hand).at(CJ).at(i)+0.05F, 2.F),
+						1.F);
+					*adj_diff *=
 					  fastsqrt(calc.pmod_vals.at(hand).at(OHJumpMod).at(i));
 					break;
 				default:
@@ -982,7 +978,7 @@ MinaSDCalc(const std::vector<NoteInfo>& NoteInfo, Calc* calc) -> MinaSD
 	return allrates;
 }
 
-int mina_calc_version = 500;
+int mina_calc_version = 505;
 auto
 GetCalcVersion() -> int
 {
