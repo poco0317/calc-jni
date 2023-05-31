@@ -1,5 +1,5 @@
 #pragma once
-#include "Models/NoteData/NoteDataStructures.h"
+#include "../Models/NoteData/NoteDataStructures.h"
 #include <vector>
 
 // EXISTS FOR AUTOMATED COMPARISONS AGAINST THE NEW CALC ONLY
