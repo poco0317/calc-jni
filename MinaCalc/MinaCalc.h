@@ -1,12 +1,8 @@
 #pragma once
-#include "../Models/NoteData/NoteDataStructures.h"
-#include <string>
+#include "Models/NoteData/NoteDataStructures.h"
 #include <vector>
-#include <array>
-#include <algorithm>
-#include <memory>
-#include <cmath>
-#include <cstring>
+
+// EXISTS FOR AUTOMATED COMPARISONS AGAINST THE NEW CALC ONLY
 
 // For internal, must be preprocessor defined
 #if defined(MINADLL_COMPILE) && defined(_WIN32)
@@ -18,337 +14,192 @@
 #define MINACALC_API
 #endif
 
-/// Defines a structure containing skillset values for every rate to cache MSDs.
-using MinaSD = std::vector<std::vector<float>>;
+  typedef std::vector<float>
+	SDiffs;
+typedef std::vector<SDiffs> MinaSD;
 
-class Calc;
+typedef std::vector<std::vector<float>> Finger;
+typedef std::vector<Finger> ProcessedFingers;
+typedef std::vector<float> JackSeq;
 
-/** This defines the base size for each interval-based vector in MinaCalc.
-* Each interval is one half second. If any situation arises in which the
-* number of intervals required is above 1000, the vectors will resize to fit.
-* 1000 intervals should be enough to fit most files (8.3 minutes)
-*/
-static constexpr int default_interval_count = 1000;
-
-/** This is a hard cap to file length in terms of intervals to prevent massive
-* memory allocations. Almost every file that exists (except a handful) fit this.
-*/
-static constexpr int max_intervals = 100000;
-
-/** This is a hard cap on how many rows should fit into an interval.
-* Intervals are one half second. If this is reached, this implies that the
-* file has a 100 nps burst. Nobody could ever possibly hit that (in 4k).
-* Any file that reaches this in any interval is skipped.
-*/
-static constexpr int max_rows_for_single_interval = 50;
-
-/** Defining which hands exist (the left and right).
-* Values in this enum are referred to when iterating hands and when checking
-* to see how many hands exist.
-*/
-enum hands
+/*	The difficulties of each hand tend to be independent from one another. This
+is not absolute, as in the case of polyrhythm trilling. However the goal of the
+calculator is to estimate the difficulty of a file given the physical properties
+of such, and not to evalute the difficulty of reading (which is much less
+quantifiable). It is both less accurate and logically incorrect to attempt to
+assert a single difficulty for both hands for a given interval of time in a
+file, so most of the internal calculator operations are done after splitting up
+each track of the chart into their respective phalangeal parents. */
+class Hand
 {
-	left_hand,
-	right_hand,
-	num_hands,
+  public:
+	/*	Spits out a rough estimate of difficulty based on the ms values within
+	the interval The std::vector passed to it is the std::vector of ms values within each
+	interval, and not the full std::vector of intervals. */
+	float CalcMSEstimate(std::vector<float>& v);
+
+	// Wraps the three prepatory functions below
+	void InitHand(Finger& f1, Finger& f2, float ts);
+
+	/*	Averages nps and ms estimates for difficulty to get a rough initial
+	value. This is relatively robust as patterns that get overrated by nps
+	estimates are underrated by ms estimates, and vice versa. Pattern modifiers
+	are used to adjust for circumstances in which this is not true. The result
+	is output to v_itvdiff. */
+	void InitDiff(Finger& f1, Finger& f2);
+
+	// Totals up the points available for each interval
+	void InitPoints(Finger& f1, Finger& f2);
+
+	// Self explanatory
+	void SetTimingScale(float ts) { timingscale = ts; }
+
+	/*	The stamina model works by asserting a minimum difficulty relative to
+	the supplied player skill level for which the player's stamina begins to
+	wane. Experience in both gameplay and algorithm testing has shown the
+	appropriate value to be around 0.8. The multiplier is scaled to the
+	proportionate difference in player skill. */
+	std::vector<float> StamAdjust(float x, std::vector<float> diff);
+
+	/*	For a given player skill level x, invokes the function used by wife
+	scoring to assert the average of the distribution of point gain for each
+	interval and then tallies up the result to produce an average total number
+	of points achieved by this hand. */
+	float CalcInternal(float x, bool stam, bool nps, bool js, bool hs);
+
+	std::vector<float> ohjumpscale;
+	std::vector<float> rollscale;
+	std::vector<float> hsscale;
+	std::vector<float> jumpscale;
+	std::vector<float> anchorscale;
+	std::vector<int> v_itvpoints;	// Point allotment for each interval
+	std::vector<float> v_itvNPSdiff; // Calculated difficulty for each interval
+	std::vector<float> v_itvMSdiff;  // Calculated difficulty for each interval
+	std::vector<float> debug;		 // debug info placement
+	std::vector<float> finalMSDvals; // cancer cancer cancer cancer
+	std::vector<float> pointslost;
+  private:
+	const bool SmoothDifficulty =
+	  true; // Do we moving average the difficulty intervals?
+
+	float timingscale; // Timingscale for use in the point proportion function
+	float jumpstreamscaler = 0.975f;
+	float handstreamscaler = 0.92f;
+	float finalscaler = 2.564f * 1.05f * 1.1f * 1.10f * 1.10f *
+						1.025f; // multiplier to standardize baselines
+
+	// Stamina Model params
+	const float ceil = 1.08f;	// stamina multiplier max
+	const float mag = 355.f;	 // multiplier generation scaler
+	const float fscale = 2000.f; // how fast the floor rises (it's lava)
+	const float prop =
+	  0.75f; // proportion of player difficulty at which stamina tax begins
 };
 
-/// Both hands, left to right
-static constexpr hands both_hands[num_hands] = { left_hand, right_hand };
-
-/** Each NoteInfo is translated into this struct and stored in Calc::adj_ni.
-* The point is to precalculate a bit of the information for clarity and speed.
-* The drawback is primarily memory allocation related.
-*/
-struct RowInfo
-{
-	/** Binary representation of notes in the row.
-	* Look at the notes in a .sm for example. Mirror it, and it is this.
-	* Tap on leftmost column: 0001 ... Tap on rightmost column: 1000
-	*/
-	unsigned row_notes = 0U;
-
-	/// 1-4 referring to if the row is a tap, jump, hand, or quad.
-	int row_count = 0;
-
-	/// Counting the left handed and right handed notes in this row.
-	std::array<int, num_hands> hand_counts = { 0, 0 };
-
-	/// Rate-scaled time of this row.
-	float row_time = 0.F;
-};
-
-/// Main driver class for the difficulty calculator as a whole.
 class Calc
 {
   public:
-	/** Primary calculator function that wraps everything else. Runs notedata
-	* through ulbu which builds the base diff values and then runs the chisel
-	* function over the produced diff vectors for each skillset. The main
-	* drawback of this approach is files with multiple skillsets tend to get
-	* significantly underrated
-	*/
-	auto CalcMain(const std::vector<NoteInfo>& NoteInfo,
-				  float music_rate,
-				  float score_goal) -> std::vector<float>;
+	/*	Primary calculator function that wraps everything else. Initializes the
+	hand objects and then runs the chisel function under varying circumstances
+	to estimate difficulty for each different skillset. Currently only
+	overall/stamina are being produced. */
+	std::vector<float> CalcMain(const std::vector<NoteInfo>& NoteInfo, float timingscale, float score_goal);
 
-	/// For debug output. Should only ever be true at music select. 
-	bool debugmode = false;
+	// redo these asap
+	std::vector<float> JackStamAdjust(std::vector<float>& j, float x, bool jackstam);
+	float JackLoss(std::vector<float>& j, float x, bool jackstam);
+	JackSeq SequenceJack(const std::vector<NoteInfo>& NoteInfo, int t);
 
-	/// Set true for score related output, and false for MSD caching.
-	bool ssr = true;
+	int numitv;
+	int fastwalk(const std::vector<NoteInfo>& NoteInfo);
 
-	/// Set true to force calc params to load outside debug mode.
-	bool loadparams = false;
+	/*	Splits up the chart by each hand and calls ProcessFinger on each "track"
+	before passing
+	the results to the hand initialization functions. Also passes the input
+	timingscale value. */
+	void InitializeHands(const std::vector<NoteInfo>& NoteInfo, float ts);
 
+	/*	Slices the track into predefined intervals of time. All taps within each
+	interval have their ms values from the last note in the same column
+	calculated and the result is spit out
+	into a new Finger object, or std::vector of std::vectors of floats (ms from last note
+	in the track). */
+	Finger ProcessFinger(const std::vector<NoteInfo>& NoteInfo, int t);
+
+	// How many buttons do you press for this chart (currently hardcoded,
+	// clearly)
+	int numTracks = 4;
+
+	float vb = 0.f;
+	float vt = 0.f;
+
+	// Derivative calc params
+	float MusicRate = 1.f;
+	float MaxPoints = 0.f; // Total points achievable in the file
+	float Scoregoal =
+	  0.93f; // What proportion of the total points are we trying to get
+	const float toffset = 0.f;
+	void TotalMaxPoints(); // Counts up the total points and assigns it
+
+	/*	Recursive non-linear calculation function. A player skill is asserted
+	and the calcultor calls the calcinternal functions for each hand and adds up
+	the calculated average points attained per attempt at the given skill level
+	for the given chart. This function will iterate until the percentage
+	obtained is greater than or equal to the scoregoal variable. The output
+	accuracy resolution can be set by either reducing the initial increment or
+	by increasing the starting iteration. */
+	float Chisel(float pskill,
+				 float res,
+				 int iter,
+				 bool stam,
+				 bool jack,
+				 bool nps,
+				 bool js,
+				 bool hs);
+
+	std::vector<float> OHJumpDownscaler(const std::vector<NoteInfo>& NoteInfo,
+								   int t1,
+								   int t2);
+	std::vector<float> Anchorscaler(const std::vector<NoteInfo>& NoteInfo,
+							   int t1,
+							   int t2);
+	std::vector<float> HSDownscaler(const std::vector<NoteInfo>& NoteInfo);
+	std::vector<float> JumpDownscaler(const std::vector<NoteInfo>& NoteInfo);
+	std::vector<float> RollDownscaler(Finger f1, Finger f2);
+	void Purge();
+	float techscaler = 0.97f;
+
+	Hand left_hand;
+	Hand right_hand;
   private:
-	/** Splits up the chart by each hand and processes them individually to
-	* produce hand specific base difficulty values, which are then passed to
-	* the chisel functions. Hardcode a limit for nps (100) and if we hit it just
-	* return max value for the calc and move on, there's no point in
-	* calculating values for 500 nps joke files.
-	*
-	* Return value is whether or not we should skip calculation.
-	*/
-	auto InitializeHands(const std::vector<NoteInfo>& NoteInfo,
-						 float music_rate,
-						 float offset) -> bool;
+	std::vector<std::vector<int>> nervIntervals;
 
-	/** Returns estimate of player skill needed to achieve score goal on chart.
-	* The player_skill parameter gives an initial guess and floor for player
-	* skill. Resolution relates to how precise the answer is. Additional
-	* parameters give specific skill sets being tested for.
-	*/
-	auto Chisel(float player_skill,
-				float resolution,
-				float score_goal,
-				Skillset ss,
-				bool stamina,
-				bool debugoutput = false) -> float;
+	// Const calc params
+	const bool SmoothPatterns =
+	  true; // Do we moving average the pattern modifier intervals?
+	const float IntervalSpan = 0.5f; // Intervals of time we slice the chart at
+	const bool logpatterns = false;
 
-	/** Once per hand, adjust the difficulty vectors using patternmod values.
-	* Difficulty vectors: jack_diff, base_adj_diff, base_diff_for_stam_mod.
-	* Iterates over each interval, and every skillset for each interval.
-	* Skips iterations of Overall and Stamina (unaffected by patternmods).
-	*/
-	static inline void InitAdjDiff(Calc& calc, const int& hand);
+	float dumbvalue = 1.f;
+	int dumbcounter = 0;
 
-  public:
-	/** Each Calc instance created sets up the interval related vectors.
-	* Their default size is default_interval_count.
-	*/
-	Calc() { resize_interval_dependent_vectors(default_interval_count); }
-	
-	/** For each interval, there are up to max_rows_for_single_interval entries
-	* of RowInfo. This is precalculated by fast_walk_and_check_for_skip.
-	* Calc iteration uses RowInfo from this instead of iterating NoteInfo.
-	*/
-	std::vector<std::array<RowInfo, max_rows_for_single_interval>>
-	  adj_ni;
-
-	/// Number of rows in each interval.
-	std::vector<int> itv_size{};
-
-	/** Number of points per interval per hand.
-	* This is equivalent to the number of notes * 2.
-	* Set up by nps::actual_cancer
-	*/
-	std::array<std::vector<int>, num_hands> itv_points{};
-
-	/** Holds pattern mod information, one float per interval per mod per hand.
-	* In most cases, these are multiplying values, so neutral is 1.
-	* For agnostic pattern mods, the values will be the same across hands.
-	*/
-	std::array<std::array<std::vector<float>, NUM_CalcPatternMod>,
-			   num_hands>
-	  pmod_vals{};
-
-	/** Holds base calculated difficulties, one float per interval per type per hand.
-	* Contains NPS, MSD, Runningman, and Tech related values.
-	* Mostly used for its NPSBase values.
-	*/
-	std::array<std::array<std::vector<float>, NUM_CalcDiffValue>,
-			   num_hands>
-	  init_base_diff_vals{};
-
-	/** Holds base difficulties adjusted by patternmods. It begins at NPSBase.
-	* One float per interval per skillset per hand.
-	* Apply stam model to these (but output is sent to stam_adj_diff, not
-	* modified here). There are at least two valid reasons to use different
-	* base values used for stam, the first being because something that
-	* alternates frequently between js and hs (du und ich), and has low
-	* detection in each skillset section for the other, will have large stam
-	* breaks in both the js and the hs pass, even if it's roughly equivalently
-	* stamina draining. This produces a drastically reduced stamina effect for
-	* a file that should arguably have a _higher_ stamina tax, due to constant
-	* pattern type swapping. This is adjusted for in js/hs. The second is
-	* that pattern mods that push down to extreme degrees stuff, like jumptrills
-	* or roll walls, will also implicitly push down their effect on stam to
-	* to the point where it may be considered a "break", even though it's
-	* really not. At best it's a very different kind of stamina drain
-	* (trill vs anchor). This is not accounted for in any way, and no
-	* estimation is made on how much this actually messes with stuff
-	* (could be minor, could be major, could be minor for most files and
-	* major for a select few)
-	*/
-	std::array<std::array<std::vector<float>, NUM_Skillset>,
-			   num_hands>
-	  base_adj_diff{};
-
-	/** Holds base stamina difficulty values for use in the stamina model.
-	* Beginning at NPSBase, these are adjusted slightly by JS and HS related
-	* diff adjustments in Calc::InitAdjDiff (the max between adjusted diff and
-	* the NPSBase for the skillset)
-	* One float per interval per skillset per hand.
-	*/
-	std::array<std::array<std::vector<float>, NUM_Skillset>,
-			   num_hands>
-	  base_diff_for_stam_mod{};
-
-	/** Pattern adjusted difficulty. Allocate only once - stam needs to be based
-	* on the above, and it needs to be recalculated every time the player_skill
-	* value changes, again based on the above. Technically we could use the
-	* skill_stamina element of the arrays to store this and save an allocation
-	* but that might just be too confusing idk.
-	* One float per interval.
-	*/
-	std::vector<float> stam_adj_diff{};
-
-	/** Jack difficulty, one pair per interval per hand. The pair is for
-	* debug purposes (temporarily).
-	* The reason for this is that jack_diff is composed of only specific
-	* jack difficulty entries that do not correspond to any time. The pair
-	* provides timestamps of each difficulty value for debug graphing.
-	* The difficulty values in this come from the hardest anchor for the hand.
-	*/
-	std::array<std::vector<std::pair<float, float>>, num_hands> jack_diff{};
-
-	// number of jacks by hand for intervals
-	// std::array<std::vector<int>, num_hands>
-	// itv_jack_diff_size{};
-
-	/// unused - formerly populated by jack related point loss values
-	std::array<std::vector<float>, num_hands> jack_loss{};
-
-	/// Only used for debugging jack stamina related adjustments to jack_diff
-	std::array<std::vector<float>, num_hands> jack_stam_stuff{};
-
-	/** Base tech difficulty per row of current interval being scanned.
-	* Composed of the mean of a small moving window of previous tech values.
-	* See techyo::advance_base for the intense details ...
-	*/
-	std::array<float, max_rows_for_single_interval> tc_static{};
-
-	/** Base Chordjack difficulty per row of current interval being scanned.
-	* See struct ceejay for the intense details ...
-	*/
-	std::array<float, max_rows_for_single_interval> cj_static{};
-
-	/// Total number of intervals for the current file/rate (one per half second)
-	int numitv = 0;
-
-	/// Total points achievable in the current file (two per note)
-	float MaxPoints = 0;
-
-	/// multiplier to resultant roughly determined by a combination
-	/// of nps and file length
-	float grindscaler = 1.F;
-
-	/** Debug values - mostly patternmod values per interval per hand.
-	* These are unnecessary now that the active session calc is a persistent
-	* songman singleton, and could/should be removed and the debug values
-	* pulled straight from the calc
-	*/
-	std::array<std::vector<std::vector<std::vector<float>>>, num_hands>
-	  debugValues{};
-	std::array<std::array<std::vector<float>, NUM_Skillset>, num_hands> debugMSD{};
-	std::array<std::array<std::vector<float>, NUM_Skillset>, num_hands> debugPtLoss{};
-	std::array<std::array<std::vector<float>, NUM_Skillset>, num_hands> debugTotalPatternMod{};
-
-	/// per hand, per column, vector of pairs of coeff.variance with timestamps
-	/// the CVs are based on a moving window
-	std::array<std::array<std::vector<std::pair<float, float>>, 2>, num_hands>
-	  debugMovingWindowCV{};
-
-	/// per hand vector of arrays: techyo chaos values of [row_time, pewp, obliosis, c]
-	std::array<std::vector<std::array<float, 4>>, num_hands> debugTechVals{};
-
-	/** Grow every interval-dependent vector we use.
-	* The size could be reduced but there isn't a big need for it.
-	* This does nothing if amt < the size of the vectors.
-	*/
-	void resize_interval_dependent_vectors(size_t amt)
-	{
-		// there isn't a real need to make our vectors smaller
-		if (amt < adj_ni.size())
-			return;
-		
-		// grow each vector
-		// resize is used to construct defaults, the space should be used immediately
-		adj_ni.resize(amt);
-		itv_size.resize(amt);
-		for (auto& v : itv_points)
-			v.resize(amt);
-		for (auto& a : pmod_vals)
-			for (auto& v : a)
-				v.resize(amt);
-		for (auto& a : init_base_diff_vals)
-			for (auto& v : a)
-				v.resize(amt);
-		for (auto& a : base_adj_diff)
-			for (auto& v : a)
-				v.resize(amt);
-		for (auto& a : base_diff_for_stam_mod)
-			for (auto& v : a)
-				v.resize(amt);
-		stam_adj_diff.resize(amt);
-	}
+	JackSeq j0;
+	JackSeq j1;
+	JackSeq j2;
+	JackSeq j3;
 };
 
-/// <summary>
-/// Calc driving function used for generating score-based skillset values.
-/// </summary>
-/// <param name="NoteInfo">Output from NoteData::SerializeNoteData2</param>
-/// <param name="musicrate">Music rate to adjust NoteInfo row times</param>
-/// <param name="goal">Given score value percentage - 1.0 is 100%</param>
-/// <param name="calc">Pointer to the Calc instance to use
-/// if using threads or a centralized Calc.</param>
-/// <returns>A list of the resulting skillset values.</returns>
-MINACALC_API auto
+MINACALC_API std::vector<float>
 MinaSDCalc(const std::vector<NoteInfo>& NoteInfo,
 		   float musicrate,
-		   float goal,
-		   Calc* calc) -> std::vector<float>;
-/// <summary>
-/// Calc driving function used for generating skillset values for caching.
-/// </summary>
-/// <param name="NoteInfo">Output from NoteData::SerializeNoteData2</param>
-/// <param name="calc">Pointer to the Calc instance to use
-/// if using threads or a centralized Calc.</param>
-/// <returns>MinaSD, a list of the resulting skillset values,
-/// for every rate.</returns>
-MINACALC_API auto
-MinaSDCalc(const std::vector<NoteInfo>& NoteInfo, Calc* calc) -> MinaSD;
-/// <summary>
-/// Calc driving function used for generating skillset values for debugging.
-/// Works the same as the score-based MinaSDCalc, but runs debug mode.
-/// </summary>
-/// <param name="NoteInfo">Output from NoteData::SerializeNoteData2</param>
-/// <param name="musicrate">Music rate to adjust NoteInfo row times</param>
-/// <param name="goal">Given score value percentage - 1.0 is 100%</param>
-/// <param name="handInfo">Vector to fill with debugValue info per hand</param>
-/// <param name="debugstrings">Vector to fill with a string
-/// representation of the notes in every interval</param>
-/// <param name="calc">Pointer to the calc instance to use
-/// if using threads or a centralized Calc.</param>
-MINACALC_API void
-MinaSDCalcDebug(
-  const std::vector<NoteInfo>& NoteInfo,
-  float musicrate,
-  float goal,
-  std::vector<std::vector<std::vector<std::vector<float>>>>& handInfo,
-  std::vector<std::string>& debugstrings,
-  Calc& calc);
-/// External access to the internally defined calculator version number.
-MINACALC_API auto
-GetCalcVersion() -> int;
+		   float goal);
+MINACALC_API MinaSD
+MinaSDCalc(const std::vector<NoteInfo>& NoteInfo);
+MINACALC_API int
+GetCalcVersion();
+
+/*
+To get debug output:
+1. Turn off the built in showlog window
+2. Do StepMania.exe >> out.txt in cmd
+*/

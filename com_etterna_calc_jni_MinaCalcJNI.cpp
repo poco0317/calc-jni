@@ -30,8 +30,7 @@ JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalc(J
                 noteinfo.capacity() * sizeof(NoteInfo));
     INFILE.close();
 
-    thread_local std::unique_ptr<Calc> calc = std::make_unique<Calc>();
-    const std::vector<float> ssrs = MinaSDCalc(noteinfo, musicrate, goal, calc.get());
+    const std::vector<float> ssrs = MinaSDCalc(noteinfo, musicrate, goal);
 
     jfloatArray out = env->NewFloatArray(ssrs.size());
     env->SetFloatArrayRegion(out, 0, ssrs.size(), ssrs.data());

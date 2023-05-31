@@ -1,986 +1,1132 @@
-#include "MinaCalc.h"
-#include "Ulbu.h"
-#include "MinaCalcHelpers.h"
+// MinaCalc.cpp : Defines the exported functions for the DLL application.
+//
 
-#include <cmath>
+#include "MinaCalc.h"
 #include <iostream>
 #include <algorithm>
-#include <array>
-#include <string>
-#include <utility>
-#include <cassert>
+#include <thread>
+#include <future>
+#include <mutex>
+#include <cmath>
+#include <fstream>
 
-using std::max;
-using std::min;
-using std::pow;
+using namespace std;
 
-static std::string
-make_note_mapping(unsigned num_cols, unsigned x)
-{
-	// this prints a binary number backwards
-	std::ostringstream ss;
-	for (unsigned i = 0; i < num_cols; i++) {
-		if (x & 1)
-			ss << "x"; // 1
-		else
-			ss << "-"; // 0
-		x >>= 1;
+#define SAFE_DELETE(p)                                                         \
+	{                                                                          \
+		delete p;                                                              \
+		p = NULL;                                                              \
 	}
-	return ss.str();
+
+template<typename T, typename U>
+inline U
+lerp(T x, U l, U h)
+{
+	return static_cast<U>(x * (h - l) + l);
 }
 
-static auto
-TotalMaxPoints(const Calc& calc) -> float
-{
-	auto MaxPoints = 0;
-	for (auto i = 0; i < calc.numitv; i++) {
-		MaxPoints +=
-		  calc.itv_points[left_hand].at(i) + calc.itv_points[right_hand].at(i);
-	}
-	return static_cast<float>(MaxPoints);
-}
-
-auto
-Calc::CalcMain(const std::vector<NoteInfo>& NoteInfo,
-			   const float music_rate,
-			   const float score_goal) -> std::vector<float>
-{
-	// for multi offset passes
-	// const int num_offset_passes = ssr ? 3 : 1;
-	const auto num_offset_passes = 1;
-	std::vector<std::vector<float>> all_skillset_values(num_offset_passes);
-	for (auto cur_iteration = 0;
-		 cur_iteration < num_offset_passes;
-		 ++cur_iteration) {
-
-		const auto skip = InitializeHands(
-		  NoteInfo,
-		  music_rate,
-		  0.1F * static_cast<float>(cur_iteration));
-
-		// if we exceed max_rows_for_single_interval during processing
-		if (skip) {
-			std::cout << "skipping junk file" << std::endl;
-			return dimples_the_all_zero_output;
-		}
-
-		MaxPoints = TotalMaxPoints(*this);
-		std::vector<float> iteration_skillet_values(NUM_Skillset);
-
-		// overall and stam will be left as 0.f by this loop
-		for (auto i = 0; i < NUM_Skillset; ++i) {
-			iteration_skillet_values[i] =
-			  Chisel(0.1F, 10.24F, score_goal, static_cast<Skillset>(i), false);
-		}
-
-		// stam is based on which calc produced the highest output without it
-		const auto highest_base_skillset =
-		  static_cast<Skillset>(max_index(iteration_skillet_values));
-		const auto base = iteration_skillet_values[highest_base_skillset];
-
-		/* rerun all with stam on, optimize by starting at the non-stam adjusted
-		 * base value for each skillset. we can actually set the stam floor to <
-		 * 1 to shift the curve a bit. chisels are expensive, so we only want
-		 * to refine the values for the most important skillsets. (base * 0.9)
-		 * is not a principled choice, but it makes the calc faster than v263 on
-		 * average and results in exactly the same value for overall for ~99% of
-		 * files */
-		for (auto i = 0; i < NUM_Skillset; ++i) {
-			if (iteration_skillet_values[i] > base * 0.9f) {
-				iteration_skillet_values[i] = Chisel(iteration_skillet_values[i] * 0.9F,
-									0.32F,
-									score_goal,
-									static_cast<Skillset>(i),
-									true);
-			}
-		}
-
-		const auto highest_stam_adjusted_skillset =
-		  static_cast<Skillset>(max_index(iteration_skillet_values));
-
-		/* all relative scaling to specific skillsets should occur before this
-		 * point, not after (it ended up this way due to the normalizers which
-		 * were dumb and removed) stam is the only skillset that can/should be
-		 * normalized to base values without interfering with anything else
-		 * (since it's not based on a type of pattern) */
-
-		/* stam jams, stamina should push up the base ratings for files so files
-		 * that are more difficult by virtue of being twice as long for more or
-		 * less the same patterns don't get underrated, however they shouldn't
-		 * be pushed up a huge amount either, we want high stream scores to be
-		 * equally achieveable on longer or shorter files, ideally, the stam
-		 * ratings itself is a separate consideration and will be scaled to the
-		 * degree to which the stamina model affects the base rating, so while
-		 * stamina should affect the base skillset ratings slightly we want the
-		 * degree to which it makes files harder to be catalogued as the stamina
-		 * rating scaling down stuff that has no stamina component will help
-		 * preventing pollution of stamina leaderboards with charts that are
-		 * just very high rated but take no stamina */
-		auto highest_stam_adj_ss_value = iteration_skillet_values[highest_base_skillset];
-
-		if (highest_stam_adjusted_skillset == Skill_JackSpeed) {
-			highest_stam_adj_ss_value *= 0.8F;
-		}
-
-		/* the bigger this number the more stamina has to influence a file
-		 * before it counts in the stam skillset, i.e. something that only
-		 * benefits 2% from the stam modifiers will drop below the 1.0 mark
-		 * and move closer to 0 with the pow, resulting in a very low
-		 * stamina rating (we want this), something that benefits 5.5% will
-		 * have the 0.5% overflow multiplied and begin gaining some stam,
-		 * and something that benefits 15% will max out the possible stam
-		 * rating, which is (currently) a 1.07 multiplier to the base maybe
-		 * using a multiplier and not a difference would be better? */
-		static const auto stam_curve_shift = 0.015F;
-		// ends up being a multiplier between ~0.8 and ~1
-		auto stam_adj_mult =
-		  pow((highest_stam_adj_ss_value / base) - stam_curve_shift, 2.5F);
-
-		/* we wanted to shift the curve down a lot before pow'ing but it was too
-		 * much to balance out, so we need to give some back, this is roughly
-		 * equivalent of multiplying by 1.05 but also not really because math we
-		 * don't want to push up the high end stuff anymore so just add to let
-		 * stuff down the curve catch up a little remember we're operating on a
-		 * multiplier */
-		stam_adj_mult = std::clamp(stam_adj_mult, 0.8F, 1.08F);
-		iteration_skillet_values[Skill_Stamina] = highest_stam_adj_ss_value * stam_adj_mult *
-								 basescalers[Skill_Stamina];
-
-		// sets the 'proper' debug output, doesn't (shouldn't) affect actual
-		// values this is the only time debugoutput arg should be set to true
-		if (debugmode) {
-			for (auto ss = 0; ss < NUM_Skillset; ss++) {
-				Chisel(iteration_skillet_values.at(ss) - 0.16F,
-					   0.32F,
-					   score_goal,
-					   static_cast<Skillset>(ss),
-					   true,
-					   true);
-			}
-		}
-
-		/* the final push down, cap ssrs (score specific ratings) to stop vibro
-		 * garbage and calc abuse from polluting leaderboards too much, a "true"
-		 * 38 is still unachieved so a cap of 40 [sic] is _extremely_ generous
-		 * do this for SCORES only, not cached file difficulties */
-		if (ssr) {
-			static const auto ssrcap = 40.F;
-			for (auto& r : iteration_skillet_values) {
-				// so 50%s on 60s don't give 35s
-				r = downscale_low_accuracy_scores(r, score_goal);
-				r = std::min(r, ssrcap);
-
-				if (highest_stam_adjusted_skillset == Skill_JackSpeed) {
-					r = downscale_low_accuracy_scores(r, score_goal);
-				}
-			}
-		}
-
-		/* finished all modifications to skillset values, set overall using
-		 * sigmoidal aggregation, but only let it buff files, don't set anything
-		 * below the highest skillset th */
-		float agg = aggregate_skill(iteration_skillet_values, 0.25L, (float)1.11, 0.0, (float)10.24);
-		auto highest = max_val(iteration_skillet_values);
-		iteration_skillet_values[Skill_Overall] = agg > highest ? agg : highest;
-
-		for (auto ssval : iteration_skillet_values) {
-			all_skillset_values[cur_iteration].push_back(ssval);
-		}
-	}
-
-	// final output is the average of all skillset values of all iterations
-	// also applies the grindscaler
-	// (at the time of writing there is only 1 iteration)
-	std::vector<float> output(NUM_Skillset);
-	for (size_t i = 0; i < all_skillset_values[0].size(); ++i) {
-		std::vector<float> iteration_ss_vals;
-		iteration_ss_vals.reserve(all_skillset_values.size());
-		for (auto& ssvals : all_skillset_values) {
-			iteration_ss_vals.push_back(ssvals[i]);
-		}
-		output[i] = mean(iteration_ss_vals);
-		iteration_ss_vals.clear();
-	}
-	// lighten grindscaler for jack files only
-	Skillset highest_final_ss = Skill_Overall;
-	auto highest_final_ssv = -1.F;
-	for (size_t i = 0; i < output.size(); i++) {
-		if (i == Skill_Overall)
-			continue;
-		if (output[i] > highest_final_ssv) {
-			highest_final_ss = static_cast<Skillset>(i);
-			highest_final_ssv = output[i];
-		}
-	}
-	if (ssr) {
-		if (highest_final_ss == Skill_JackSpeed ||
-			highest_final_ss == Skill_Chordjack)
-			grindscaler = fastsqrt(grindscaler);
-		for (auto& ssv : output)
-			ssv *= grindscaler;
-	}
-	return output;
-}
-
-/* The stamina model works by asserting a minimum difficulty relative to the
- * supplied player skill level for which the player's stamina begins to wane.
- * Experience in both gameplay and algorithm testing has shown the appropriate
- * value to be around 0.8. The multiplier is scaled to the proportionate
- * difference in player skill. */
+template<typename T, typename U, typename V>
 inline void
-StamAdjust(const float x,
-		   const int ss,
-		   Calc& calc,
-		   const int hand,
-		   const bool debug = false)
+CalcClamp(T& x, U l, V h)
 {
-	/* Note: if we want max control over stamina we need to have one model for
-	 * affecting the other skillsets to a certain degree, enough to push up
-	 * longer stream ratings into contention with shorter ones, and another for
-	 * both a more granular and influential modifier to calculate the end
-	 * stamina rating with so todo on that */
+	if (x > static_cast<T>(h))
+		x = static_cast<T>(h);
+	else if (x < static_cast<T>(l))
+		x = static_cast<T>(l);
+}
 
-	// Stamina Model params
-	static const auto stam_ceil = 1.075234F; // stamina multiplier max
-	static const auto stam_mag = 243.F;		 // multiplier generation scalar
-	// how fast the floor rises (it's lava)
-	static const auto stam_fscale = 500.F;
-	// proportion of player difficulty at which stamina tax begins
-	static const auto stam_prop = 0.69424F;
+inline float
+mean(vector<float>& v)
+{
+	float sum = 0.f;
+	for (size_t i = 0; i < v.size(); ++i)
+		sum += v[i];
 
-	// stamina multiplier min (increases as chart advances)
-	auto stam_floor = 0.95F;
-	auto mod = 0.95F; // multiplier
+	return sum / v.size();
+}
 
-	float avs1;
-	auto avs2 = 0.F;
-	float local_ceil;
-	const auto super_stam_ceil = 1.09F;
+// Coefficient of variance
+inline float
+cv(vector<float>& v)
+{
+	float sum = 0.f;
+	float mean;
+	float sd = 0.f;
 
-	// use this to calculate the mod growth
-	const std::vector<float>* base_diff =
-	  &(calc.base_diff_for_stam_mod.at(hand).at(ss));
-	// but apply the mod growth to these values
-	// they might be the same, or not
-	const std::vector<float>* diff =
-	  &(calc.base_adj_diff.at(hand).at(ss));
+	for (size_t i = 0; i < v.size(); i++)
+		sum += v[i];
 
-	// i don't like the copypasta either but the boolchecks where
-	// they were were too slow
-	if (debug) {
-		for (auto i = 0; i < calc.numitv; i++) {
-			avs1 = avs2;
-			avs2 = base_diff->at(i);
-			mod += ((((avs1 + avs2) / 2.F) / (stam_prop * x)) - 1.F) / stam_mag;
-			if (mod > 0.95F) {
-				stam_floor += (mod - 0.95F) / stam_fscale;
-			}
-			local_ceil = stam_ceil * stam_floor;
+	mean = sum / v.size();
+	for (size_t i = 0; i < v.size(); i++)
+		sd += pow(v[i] - mean, 2);
 
-			mod = min(std::clamp(mod, stam_floor, local_ceil), super_stam_ceil);
-			calc.stam_adj_diff.at(i) = diff->at(i) * mod;
-			calc.debugValues.at(hand)[2][StamMod][i] = mod;
-		}
-	} else {
-		for (auto i = 0; i < calc.numitv; i++) {
-			avs1 = avs2;
-			avs2 = base_diff->at(i);
-			mod += ((((avs1 + avs2) / 2.F) / (stam_prop * x)) - 1.F) / stam_mag;
-			if (mod > 0.95F) {
-				stam_floor += (mod - 0.95F) / stam_fscale;
-			}
-			local_ceil = stam_ceil * stam_floor;
+	return sqrt(sd / v.size()) / mean;
+}
 
-			mod = min(std::clamp(mod, stam_floor, local_ceil), super_stam_ceil);
-			calc.stam_adj_diff.at(i) = diff->at(i) * mod;
-		}
+inline float
+downscalebaddies(float& f, float sg)
+{
+	CalcClamp(f, 0.f, 100.f);
+	if (sg >= 0.93f)
+		return f;
+	float o = f * 1 - sqrt(0.93f - sg);
+	CalcClamp(f, 0.f, 100.f);
+	return o;
+}
+
+// Specifically for pattern modifiers as the neutral value is 1
+inline void
+PatternSmooth(vector<float>& v)
+{
+	float f1 = 1.f;
+	float f2 = 1.f;
+	float f3 = 1.f;
+	float total = 3.f;
+
+	for (size_t i = 0; i < v.size(); i++) {
+		total -= f1;
+		f1 = f2;
+		f2 = f3;
+		f3 = v[i];
+		total += f3;
+		v[i] = (f1 + f2 + f3) / 3;
 	}
 }
 
-// tuned for jacks, dunno what this functionally means, yet
-inline auto
-JackStamAdjust(const float x, Calc& calc, const int hand)
-  -> std::vector<std::pair<float, float>>
+inline void
+DifficultySmooth(vector<float>& v)
 {
-	// Jack stamina Model params (see above)
-	static const auto stam_ceil = 1.05234F;
-	static const auto stam_mag = 23.F;
-	static const auto stam_fscale = 750.F;
-	static const auto stam_prop = 0.49424F;
-	// mod hard floor
-	auto stam_floor = 0.95F;
-	auto mod = 1.F;
+	float f1 = 0.f;
+	float f2 = 0.f;
+	float f3 = 0.f;
+	float total = 0.f;
 
-	auto avs2 = 0.F;
+	for (size_t i = 0; i < v.size(); i++) {
+		total -= f1;
+		f1 = f2;
+		f2 = f3;
+		f3 = v[i];
+		total += f3;
+		v[i] = (f1 + f2 + f3) / 3;
+	}
+}
 
-	// mod hard cap
-	const auto super_stam_ceil = 1.01F;
+inline void
+DifficultyMSSmooth(vector<float>& v)
+{
+	float f1 = 0.f;
+	float f2 = 0.f;
 
-	const auto& diff = calc.jack_diff.at(hand);
-	std::vector<std::pair<float, float>> output(diff.size());
+	for (size_t i = 0; i < v.size(); i++) {
+		f1 = f2;
+		f2 = v[i];
+		v[i] = (f1 + f2) / 2.f;
+	}
+}
 
-	calc.jack_stam_stuff.at(hand).resize(diff.size());
+inline float
+AggregateScores(vector<float>& invector, float rating, float res, int iter)
+{
+	float sum;
+	do {
+		rating += res;
+		sum = 0.0f;
+		for (int i = 0; i < static_cast<int>(invector.size()); i++) {
+			sum += 2.f / erfc(0.5f * (invector[i] - rating)) - 1.f;
+		}
+	} while (3 < sum);
+	if (iter == 11)
+		return rating;
+	return AggregateScores(invector, rating - res, res / 2.f, iter + 1);
+}
+
+float
+normalizer(float x, float y, float z1, float z2)
+{
+	float norm = ((x / y) - 1.f) * z1;
+	CalcClamp(norm, 0.f, 1.f);
+	float o = x * z2 * norm + x * (1.f - z2);
+	return o;
+}
+
+float
+jumpprop(const vector<NoteInfo>& NoteInfo)
+{
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	int taps = 0;
+	int jamps = 0;
+
+	for (size_t r = 0; r < NoteInfo.size(); r++) {
+		int notes = (NoteInfo[r].notes & left ? 1 : 0) +
+					(NoteInfo[r].notes & down ? 1 : 0) +
+					(NoteInfo[r].notes & up ? 1 : 0) +
+					(NoteInfo[r].notes & right ? 1 : 0);
+		taps += notes;
+		if (notes == 2)
+			jamps += notes;
+	}
+
+	return static_cast<float>(jamps) / static_cast<float>(taps);
+}
+
+float
+handprop(const vector<NoteInfo>& NoteInfo)
+{
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	int taps = 0;
+	int hands = 0;
+
+	for (size_t r = 0; r < NoteInfo.size(); r++) {
+		int notes = (NoteInfo[r].notes & left ? 1 : 0) +
+					(NoteInfo[r].notes & down ? 1 : 0) +
+					(NoteInfo[r].notes & up ? 1 : 0) +
+					(NoteInfo[r].notes & right ? 1 : 0);
+		taps += notes;
+		if (notes == 3)
+			hands += notes;
+	}
+
+	return static_cast<float>(hands) / static_cast<float>(taps);
+}
+
+float
+notcj(const vector<NoteInfo>& NoteInfo)
+{
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	int taps = 0;
+	int hands = 0;
+	int lcol = 0;
+	int lnotes = 0;
+	for (size_t r = 0; r < NoteInfo.size(); r++) {
+		int lefty = NoteInfo[r].notes & left ? 1 : 0;
+		int downy = NoteInfo[r].notes & down ? 1 : 0;
+		int upy = NoteInfo[r].notes & up ? 1 : 0;
+		int righty = NoteInfo[r].notes & right ? 1 : 0;
+
+		int notes = lefty + downy + upy + righty;
+		int tcol = 0;
+		if (notes == 1) {
+			if (lefty)
+				tcol = left;
+			if (downy)
+				tcol = down;
+			if (upy)
+				tcol = up;
+			if (righty)
+				tcol = right;
+
+			if (tcol != lcol && (lnotes == 3 || lnotes == 2))
+				taps += 1;
+		}
+
+		if ((notes == 3 || notes == 2) && lnotes == 1) {
+			if (lefty && lcol == left)
+				taps -= 1;
+			if (downy && lcol == down)
+				taps -= 1;
+			if (upy && lcol == up)
+				taps -= 1;
+			if (righty && lcol == right)
+				taps -= 1;
+			taps += 1;
+		}
+
+		taps += notes;
+		if (notes == 3)
+			hands += notes;
+
+		lnotes = notes;
+		if (lefty)
+			lcol = left;
+		if (downy)
+			lcol = down;
+		if (upy)
+			lcol = up;
+		if (righty)
+			lcol = right;
+	}
+
+	return static_cast<float>(hands) / static_cast<float>(taps);
+}
+
+float
+quadprop(const vector<NoteInfo>& NoteInfo)
+{
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	int taps = 0;
+	int quads = 0;
+
+	for (size_t r = 0; r < NoteInfo.size(); r++) {
+		int notes = (NoteInfo[r].notes & left ? 1 : 0) +
+					(NoteInfo[r].notes & down ? 1 : 0) +
+					(NoteInfo[r].notes & up ? 1 : 0) +
+					(NoteInfo[r].notes & right ? 1 : 0);
+		taps += notes;
+		if (notes == 4)
+			quads += notes;
+	}
+
+	return static_cast<float>(quads) / static_cast<float>(taps);
+}
+
+vector<float>
+Calc::CalcMain(const vector<NoteInfo>& NoteInfo,
+			   float timingscale,
+			   float score_goal)
+{
+	// LOG->Trace("%f", etaner.back());
+	float grindscaler =
+	  0.93f + (0.07f * (NoteInfo.back().rowTime - 30.f) / 30.f);
+	CalcClamp(grindscaler, 0.93f, 1.f);
+
+	float grindscaler2 =
+	  0.873f + (0.13f * (NoteInfo.back().rowTime - 15.f) / 15.f);
+	CalcClamp(grindscaler2, 0.87f, 1.f);
+
+	float shortstamdownscaler =
+	  0.9f + (0.1f * (NoteInfo.back().rowTime - 150.f) / 150.f);
+	CalcClamp(shortstamdownscaler, 0.9f, 1.f);
+
+	float jprop = jumpprop(NoteInfo);
+	float nojumpsdownscaler = 0.8f + (0.2f * (jprop + 0.5f));
+	CalcClamp(nojumpsdownscaler, 0.8f, 1.f);
+
+	float hprop = handprop(NoteInfo);
+
+	float nohandsdownscaler = 0.8f + (0.2f * (hprop + 0.75f));
+	CalcClamp(nohandsdownscaler, 0.8f, 1.f);
+
+	float allhandsdownscaler = 1.23f - hprop;
+	CalcClamp(allhandsdownscaler, 0.85f, 1.f);
+
+	float manyjampdownscaler = 1.43f - jprop;
+	CalcClamp(manyjampdownscaler, 0.85f, 1.f);
+
+	float qprop = quadprop(NoteInfo);
+	float lotquaddownscaler = 1.13f - qprop;
+	CalcClamp(lotquaddownscaler, 0.85f, 1.f);
+
+	float jumpthrill = 1.625f - jprop - hprop;
+	CalcClamp(jumpthrill, 0.85f, 1.f);
+
+	vector<float> o;
+	o.reserve(8);
+
+	InitializeHands(NoteInfo, timingscale);
+	TotalMaxPoints();
+	float stream =
+	  Chisel(0.1f, 10.24f, 1, false, false, true, false, false);
+	float js = Chisel(0.1f, 10.24f, 1, false, false, true, true, false);
+	float hs = Chisel(0.1f, 10.24f, 1, false, false, true, false, true);
+	float tech =
+	  Chisel(0.1f, 10.24f, 1, false, false, false, false, false);
+	float jack =
+	  Chisel(0.1f, 10.24f, 1, false, true, true, false, false);
+	float jackstam =
+	  jack;
+
+	float techbase = max(stream, jack);
+	float techorig = tech;
+	tech = (tech / techbase) * tech;
+	CalcClamp(tech, techorig * 0.85f, techorig);
+
+	float stam = 0.f;
+	if (stream > tech || js > tech || hs > tech)
+		if (stream > js && stream > hs)
+			stam = Chisel(
+			  stream - 0.1f, 2.56f, 1, true, false, true, false, false);
+		else if (js > hs)
+			stam = Chisel(
+			  js - 0.1f, 2.56f, 1, true, false, true, true, false);
+		else
+			stam = Chisel(
+			  hs - 0.1f, 2.56f, 1, true, false, true, false, true);
+	else
+		stam = Chisel(
+		  tech - 0.1f, 2.56f, 1, true, false, false, false, false);
+
+	o.emplace_back(0.f); // temp
+	o.emplace_back(downscalebaddies(stream, Scoregoal));
+
+	js = normalizer(js, stream, 7.25f, 0.25f);
+	o.emplace_back(downscalebaddies(js, Scoregoal));
+	hs = normalizer(hs, stream, 6.5f, 0.3f);
+	hs = normalizer(hs, js, 11.5f, 0.15f);
+	o.emplace_back(downscalebaddies(hs, Scoregoal));
+
+	float stambase = max(max(stream, tech * 0.96f), max(js, hs));
+	if (stambase == stream)
+		stambase *= 0.975f;
+
+	stam = normalizer(stam, stambase, 7.75f, 0.2f);
+	o.emplace_back(downscalebaddies(stam, Scoregoal));
+
+	o.emplace_back(downscalebaddies(jack, Scoregoal));
+	jackstam = normalizer(jackstam, jack, 5.5f, 0.25f);
+	o.emplace_back(downscalebaddies(jackstam, Scoregoal));
+	float technorm = max(max(stream, js), hs);
+	tech = normalizer(tech, technorm, 8.f, .15f) * techscaler;
+	o.emplace_back(downscalebaddies(tech, Scoregoal));
+
+	float definitelycj = qprop + hprop + jprop + 0.2f;
+	CalcClamp(definitelycj, 0.5f, 1.f);
+
+	// chordjack
+	float cj = o[3];
+
+	o[1] *= allhandsdownscaler * manyjampdownscaler * lotquaddownscaler;
+	o[2] *= nojumpsdownscaler * allhandsdownscaler * lotquaddownscaler;
+	o[3] *= nohandsdownscaler * allhandsdownscaler * 1.015f *
+			manyjampdownscaler * lotquaddownscaler;
+	o[4] *= shortstamdownscaler * 0.985f * lotquaddownscaler;
+
+	cj = normalizer(cj, o[3], 5.5f, 0.3f) * definitelycj * 1.025f;
+
+	bool iscj = cj > o[5];
+	if (iscj)
+		o[6] = cj;
+
+	o[7] *= allhandsdownscaler * manyjampdownscaler * lotquaddownscaler * 1.01f;
+
+	float stamclamp = max(max(o[1], o[5]), max(o[2], o[3]));
+	CalcClamp(o[4], 1.f, stamclamp * 1.1f);
+
+	dumbvalue = (dumbvalue / static_cast<float>(dumbcounter));
+	float stupidvalue = 1.f - (dumbvalue - 2.55f);
+	CalcClamp(stupidvalue, 0.85f, 1.f);
+	o[7] *= stupidvalue;
+
+	if (stupidvalue <= 0.95f) {
+		o[5] *= 1.f + (1.f - sqrt(stupidvalue));
+	}
+
+	float skadoot = max(o[3], o[2]);
+	if (o[1] < skadoot)
+		o[1] -= sqrt(skadoot - o[1]);
+
+	float overall = AggregateScores(o, 0.f, 10.24f, 1);
+	o[0] = downscalebaddies(overall, Scoregoal);
+
+	float aDvg = mean(o) * 1.2f;
+	for (size_t i = 0; i < o.size(); i++) {
+		if (i == 1 || i == 2 || i == 7) {
+			CalcClamp(o[i], 0.f, aDvg * 1.0416f);
+			o[i] *= grindscaler * grindscaler2;
+		} else {
+			CalcClamp(o[i], 0.f, aDvg);
+			o[i] *= grindscaler * grindscaler2;
+		}
+		o[i] = downscalebaddies(o[i], Scoregoal);
+	}
+
+	o[2] *= jumpthrill;
+	o[3] *= jumpthrill;
+	o[4] *= sqrt(jumpthrill) * 0.996f;
+	o[7] *= sqrt(jumpthrill);
+
+	float highest = 0.f;
+	for (auto v : o) {
+		if (v > highest)
+			highest = v;
+	}
+	o[0] = AggregateScores(o, 0.f, 10.24f, 1);
+	;
+
+	float dating = 0.5f + (highest / 100.f);
+	CalcClamp(dating, 0.f, 0.9f);
+
+	if (Scoregoal < dating) {
+		for (size_t i = 0; i < o.size(); i++) {
+			o[i] = 0.f;
+		}
+	}
+
+	o[5] *= 1.0075f;
+
+	float hsnottech = o[7] - o[3];
+	float jsnottech = o[7] - o[2];
+
+	if (highest == o[7]) {
+		hsnottech = 4.5f - hsnottech;
+		CalcClamp(hsnottech, 0.f, 4.5f);
+		o[7] -= hsnottech;
+
+		jsnottech = 4.5f - jsnottech;
+		CalcClamp(jsnottech, 0.f, 4.5f);
+		o[7] -= jsnottech;
+	}
+
+	o[7] *= 1.025f;
+	if (!iscj)
+		o[6] *= 0.9f;
+
+	highest = 0.f;
+	o[0] = 0.f;
+	for (auto v : o) {
+		if (v > highest)
+			highest = v;
+	}
+	o[0] = highest;
+
+	return o;
+}
+
+// ugly jack stuff
+vector<float>
+Calc::JackStamAdjust(vector<float>& j, float x, bool jackstam)
+{
+	vector<float> o(j.size());
+	float floor = 1.f;
+	float mod = 1.f;
+	float ceil = 1.15f;
+	float fscale = 1750.f;
+	float prop = 0.75f;
+	float mag = 250.f;
+	float multstam = 1.f;
+	if (jackstam) {
+		multstam = 1.f;
+		prop = 0.55f;
+		ceil = 1.5f;
+		fscale = 1550.f;
+		mag = 750.f;
+	}
+
+	for (size_t i = 0; i < j.size(); i++) {
+		mod += ((j[i] * multstam / (prop * x)) - 1) / mag;
+		if (mod > 1.f)
+			floor += (mod - 1) / fscale;
+		CalcClamp(mod, 1.f, ceil * sqrt(floor));
+		o[i] = j[i] * mod;
+	}
+	return o;
+}
+
+float
+Calc::JackLoss(vector<float>& j, float x, bool jackstam)
+{
+	const vector<float>& v = JackStamAdjust(j, x, jackstam);
+	float o = 0.f;
+	for (size_t i = 0; i < v.size(); i++) {
+		if (x < v[i])
+			o += 7.f - (7.f * pow(x / (v[i] * 0.96f), 1.5f));
+	}
+	CalcClamp(o, 0.f, 10000.f);
+	return o;
+}
+
+JackSeq
+Calc::SequenceJack(const vector<NoteInfo>& NoteInfo, int t)
+{
+	vector<float> o;
+	float last = -5.f;
+	float mats1 = 0.f;
+	float mats2 = 0.f;
+	float mats3 = 0.f;
+	float timestamp = 0.f;
+	int track = 1 << t;
+
+	for (size_t i = 0; i < NoteInfo.size(); i++) {
+		float scaledtime = NoteInfo[i].rowTime / MusicRate;
+		if (NoteInfo[i].notes & track) {
+			mats1 = mats2;
+			mats2 = mats3;
+			mats3 = 1000.f * (scaledtime - last);
+			last = scaledtime;
+			timestamp = (mats1 + mats2 + mats3) / 3.f;
+
+			CalcClamp(timestamp, 25.f, mats3 * 1.4f);
+			float tmp = 1 / timestamp * 2800.f;
+			CalcClamp(tmp, 0.f, 50.f);
+			o.emplace_back(tmp);
+		}
+	}
+	return o;
+}
+
+int
+Calc::fastwalk(const vector<NoteInfo>& NoteInfo)
+{
+	int Interval = 0;
+	for (size_t i = 0; i < NoteInfo.size(); i++) {
+		if (NoteInfo[i].rowTime / MusicRate >= Interval * IntervalSpan)
+			++Interval;
+	}
+	return Interval;
+}
+
+void
+Calc::InitializeHands(const vector<NoteInfo>& NoteInfo, float ts)
+{
+	numitv = fastwalk(NoteInfo);
+
+	ProcessedFingers l;
+	ProcessedFingers r;
+	for (int i = 0; i < 4; i++) {
+		if (i <= numTracks / 2 - 1)
+			l.emplace_back(ProcessFinger(NoteInfo, i));
+		else
+			r.emplace_back(ProcessFinger(NoteInfo, i));
+	}
+
+	left_hand.InitHand(l[0], l[1], ts);
+	left_hand.ohjumpscale = OHJumpDownscaler(NoteInfo, 0, 1);
+	left_hand.anchorscale = Anchorscaler(NoteInfo, 0, 1);
+	left_hand.rollscale = RollDownscaler(l[0], l[1]);
+	left_hand.hsscale = HSDownscaler(NoteInfo);
+	left_hand.jumpscale = JumpDownscaler(NoteInfo);
+
+	right_hand.InitHand(r[0], r[1], ts);
+	right_hand.ohjumpscale = OHJumpDownscaler(NoteInfo, 2, 3);
+	right_hand.anchorscale = Anchorscaler(NoteInfo, 2, 3);
+	right_hand.rollscale = RollDownscaler(r[0], r[1]);
+	right_hand.hsscale = left_hand.hsscale;
+	right_hand.jumpscale = left_hand.jumpscale;
+
+	j0 = SequenceJack(NoteInfo, 0);
+	j1 = SequenceJack(NoteInfo, 1);
+	j2 = SequenceJack(NoteInfo, 2);
+	j3 = SequenceJack(NoteInfo, 3);
+
+	vector<Finger> ltmp;
+	vector<Finger> rtmp;
+	l.swap(ltmp);
+	r.swap(rtmp);
+
+	l.shrink_to_fit();
+	r.shrink_to_fit();
+}
+
+Finger
+Calc::ProcessFinger(const vector<NoteInfo>& NoteInfo, int t)
+{
+	int Interval = 1;
+	float last = -5.f;
+	Finger AllIntervals(numitv);
+	vector<float> CurrentInterval;
+	float Timestamp;
+	vector<int> itvnervtmp;
+	vector<vector<int>> itvnerv(numitv);
+
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	int column = 1 << t;
+	for (size_t i = 0; i < NoteInfo.size(); i++) {
+		float scaledtime = NoteInfo[i].rowTime / MusicRate;
+
+		if (scaledtime >= Interval * IntervalSpan) {
+			AllIntervals[Interval - 1] = CurrentInterval;
+			CurrentInterval.clear();
+
+			itvnerv[Interval - 1] = itvnervtmp;
+			itvnervtmp.clear();
+			++Interval;
+		}
+
+		if (NoteInfo[i].notes & column) {
+			Timestamp = 1000 * (scaledtime - last);
+			last = scaledtime;
+			CalcClamp(Timestamp, 40.f, 5000.f);
+			CurrentInterval.emplace_back(Timestamp);
+		}
+
+		if (t == 0 && (NoteInfo[i].notes & left || NoteInfo[i].notes & down ||
+					   NoteInfo[i].notes & up || NoteInfo[i].notes & right)) {
+			itvnervtmp.emplace_back(i);
+		}
+	}
+
+	if (t == 0)
+		nervIntervals = itvnerv;
+	return AllIntervals;
+}
+
+void
+Calc::TotalMaxPoints()
+{
+	for (size_t i = 0; i < left_hand.v_itvpoints.size(); i++)
+		MaxPoints +=
+		  static_cast<int>(left_hand.v_itvpoints[i] + right_hand.v_itvpoints[i]);
+}
+
+float
+Calc::Chisel(float pskill,
+			 float res,
+			 int iter,
+			 bool stam,
+			 bool jack,
+			 bool nps,
+			 bool js,
+			 bool hs)
+{
+	float gotpoints = 0.f;
+	do {
+		if (pskill > 100.f)
+			return pskill;
+		pskill += res;
+		if (jack) {
+			{
+				gotpoints = MaxPoints;
+				gotpoints -=
+				  JackLoss(j0, pskill, false) + JackLoss(j1, pskill, false) +
+				  JackLoss(j2, pskill, false) + JackLoss(j3, pskill, false);
+			}
+		} else
+			gotpoints = left_hand.CalcInternal(pskill, stam, nps, js, hs) +
+						right_hand.CalcInternal(pskill, stam, nps, js, hs);
+
+	} while (gotpoints / MaxPoints < Scoregoal);
+	if (iter == 7)
+		return pskill;
+	return Chisel(
+	  pskill - res, res / 2.f, iter + 1, stam, jack, nps, js, hs);
+}
+
+// Hand stuff
+void
+Hand::InitHand(Finger& f1, Finger& f2, float ts)
+{
+	SetTimingScale(ts);
+	InitDiff(f1, f2);
+	InitPoints(f1, f2);
+}
+
+float
+Hand::CalcMSEstimate(vector<float>& v)
+{
+	if (v.empty())
+		return 0.f;
+
+	sort(v.begin(), v.end());
+	float m = 0;
+	v[0] *= 1.066f;
+	size_t End = min(v.size(), static_cast<size_t>(6));
+	for (size_t i = 0; i < End; i++)
+		m += v[i];
+	return 1 / (m / (End)) * 1375;
+}
+
+void
+Hand::InitDiff(Finger& f1, Finger& f2)
+{
+	vector<float> tmpNPS(f1.size());
+	vector<float> tmpMS(f1.size());
+
+	for (size_t i = 0; i < f1.size(); i++) {
+		float nps = 1.6f * static_cast<float>(f1[i].size() +
+											  f2[i].size()); // intervalspan
+		float aa = CalcMSEstimate(f1[i]);
+		float bb = CalcMSEstimate(f2[i]);
+		float ms = max(aa, bb);
+		tmpNPS[i] = finalscaler * nps;
+		tmpMS[i] =
+		  finalscaler * (ms + ms + ms + ms + ms + nps + nps + nps + nps) / 9.f;
+	}
+	if (SmoothDifficulty)
+		DifficultyMSSmooth(tmpMS);
+
+	DifficultySmooth(tmpNPS);
+	v_itvNPSdiff = tmpNPS;
+	v_itvMSdiff = tmpMS;
+}
+
+void
+Hand::InitPoints(Finger& f1, Finger& f2)
+{
+	for (size_t i = 0; i < f1.size(); i++)
+		v_itvpoints.emplace_back(static_cast<int>(f1[i].size()) +
+								 static_cast<int>(f2[i].size()));
+}
+
+vector<float>
+Hand::StamAdjust(float x, vector<float> diff)
+{
+	vector<float> o(diff.size());
+	float floor = 1.f; // stamina multiplier min (increases as chart advances)
+	float mod = 1.f;   // mutliplier
+
+	float avs1 = 0.f;
+	float avs2 = 0.f;
 
 	for (size_t i = 0; i < diff.size(); i++) {
-		const auto avs1 = avs2;
-		avs2 = diff.at(i).second;
-		mod += ((((avs1 + avs2) / 2.F) / (stam_prop * x)) - 1.F) / stam_mag;
-		if (mod > 0.95F) {
-			stam_floor += (mod - 0.95F) / stam_fscale;
-		}
-		const auto local_ceil = stam_ceil * stam_floor;
+		avs1 = avs2;
+		avs2 = diff[i];
+		float ebb = (avs1 + avs2) / 2;
+		mod += ((ebb / (prop * x)) - 1) / mag;
+		if (mod > 1.f)
+			floor += (mod - 1) / fscale;
+		CalcClamp(mod, floor, ceil);
+		o[i] = diff[i] * mod;
+	}
+	return o;
+}
 
-		mod = min(std::clamp(mod, stam_floor, local_ceil), super_stam_ceil);
+float
+Hand::CalcInternal(float x, bool stam, bool nps, bool js, bool hs)
+{
+	vector<float> diff;
 
-		output.at(i).first = diff.at(i).first;
-		output.at(i).second = diff.at(i).second * mod;
+	if (nps)
+		diff = v_itvNPSdiff;
+	else
+		diff = v_itvMSdiff;
 
-		calc.jack_stam_stuff.at(hand).at(i) = mod;
+	for (size_t i = 0; i < diff.size(); ++i) {
+		if (hs)
+			diff[i] = diff[i] * anchorscale[i] * sqrt(ohjumpscale[i]) *
+					  rollscale[i] * jumpscale[i];
+		else if (js)
+			diff[i] = diff[i] * pow(hsscale[i], 2) * anchorscale[i] *
+					  sqrt(ohjumpscale[i]) * rollscale[i] * jumpscale[i];
+		else if (nps)
+			diff[i] = diff[i] * pow(hsscale[i], 3) * anchorscale[i] *
+					  pow(ohjumpscale[i], 2) * rollscale[i] *
+					  pow(jumpscale[i], 2);
+		else
+			diff[i] =
+			  diff[i] * anchorscale[i] * sqrt(ohjumpscale[i]) * rollscale[i];
 	}
 
+	const vector<float>& v = stam ? StamAdjust(x, diff) : diff;
+	finalMSDvals = v; // bad bad bad bad bad bad bad bad bad bad
+	float output = 0.f;
+	std::vector<float> pointloss;
+	for (size_t i = 0; i < v.size(); i++) {
+		float gainedpoints = x > v[i]
+							   ? v_itvpoints[i]
+							   : v_itvpoints[i] * pow(x / v[i], 1.8f);
+
+		output += gainedpoints;
+		pointloss.push_back(v_itvpoints[i] - gainedpoints);
+	}
+	pointslost = pointloss; // to the bone
 	return output;
 }
 
-constexpr float magic_num = 12.F;
-
-[[nodiscard]] inline auto
-jack_pointloser_func(const float& x, const float& y) -> float
+// pattern modifiers
+vector<float>
+Calc::OHJumpDownscaler(const vector<NoteInfo>& NoteInfo, int t1, int t2)
 {
-	return std::max(static_cast<float>(magic_num * erf(0.04F * (y - x))), 0.F);
-}
+	vector<float> o(nervIntervals.size());
+	int firstNote = 1 << t1;
+	int secondNote = 1 << t2;
 
-/* ok this is a little jank, we are calculating jack loss looping over the
- * interval and interval size loop that adj_ni uses, or each rows per interval,
- * except we're doing it for each hand. aggregating jack diff into intervals
- * proves too problematic, so we'll calculate it by discrete notes, calculate
- * the point loss the same way, and then dump them into intervals just for calc
- * debug display. this also lets us put back some sort of jack stam model.
- * this sets pointloss debug values only, not diff. Note: jackloss should always
- * be a positive value, and be subtracted */
-inline auto
-jackloss(const float& x, Calc& calc, const int& hand, const bool stam, const bool debug = false) -> float
-{
-	const auto& v = stam ? JackStamAdjust(x, calc, hand) : calc.jack_diff.at(hand);
-	auto total = 0.F;
+	for (size_t i = 0; i < nervIntervals.size(); i++) {
+		if (nervIntervals[i].empty())
+			o[i] = 1.f;
+		else {
+			int taps = 0;
+			int jumptaps = 0;
+			for (size_t r = 0; r < nervIntervals[i].size(); r++) {
+				int row = nervIntervals[i][r];
+				if (NoteInfo[row].notes & firstNote) {
+					++taps;
+					if (NoteInfo[row].notes & secondNote) {
+						jumptaps += 2;
+						++taps;
+					}
+				}
+			}
+			o[i] = taps != 0 ? pow(1 - (static_cast<float>(jumptaps) /
+										static_cast<float>(taps) / 2.5f),
+								   0.25f)
+							 : 1.f;
 
-	if (debug) {
-		calc.jack_loss.at(hand).resize(v.size());
-		calc.jack_loss.at(hand).assign(v.size(), 0.F);
-		for (size_t i = 0; i < v.size(); i++) {
-			const auto& y = v[i];
-			if (x < y.second && y.second > 0.F) {
-				const auto pointslost = jack_pointloser_func(x, y.second);
-				calc.jack_loss.at(hand).at(i) = pointslost;
-				total += pointslost;
-			}
-		}
-	} else {
-		for (const auto& y : v) {
-			if (x < y.second && y.second > 0.F) {
-				const auto pointslost = jack_pointloser_func(x, y.second);
-				total += pointslost;
-			}
+			if (logpatterns)
+				cout << "ohj " << o[i] << endl;
 		}
 	}
 
-	return total;
-
-	//// interval loop
-	// for (auto itv = 0; itv < calc.numitv; ++itv) {
-	//	auto itv_total = 0.F;
-
-	//	// rows per interval now
-	//	for (auto row = 0; row < calc.itv_jack_diff_size.at(hi).at(itv);
-	//		 ++row) {
-	//		const auto& y = calc.jack_diff.at(hi).at(itv).at(row);
-
-	//		if (x < y && y > 0.F) {
-	//			const float row_loss = hit_the_road(x, y);
-	//			itv_total += row_loss > 0.F ? row_loss : 0.F;
-	//		}
-	//	}
-
-	//	// this is per _interval_, but calculated by row scanning
-	//	calc.jack_loss.at(hi).at(itv) = itv_total;
-	//	total += itv_total;
-	//}
-	// return total;
+	if (SmoothPatterns)
+		PatternSmooth(o);
+	return o;
 }
 
-// debug bool here is NOT the one in Calc, it is passed from chisel
-// using the final difficulty as the starting point and should only
-// be executed once per chisel
+// pattern modifiers
+vector<float>
+Calc::Anchorscaler(const vector<NoteInfo>& NoteInfo, int t1, int t2)
+{
+	vector<float> o(nervIntervals.size());
+	int firstNote = 1 << t1;
+	int secondNote = 1 << t2;
+
+	for (size_t i = 0; i < nervIntervals.size(); i++) {
+		if (nervIntervals[i].empty())
+			o[i] = 1.f;
+		else {
+			int lcol = 0;
+			int rcol = 0;
+			for (size_t r = 0; r < nervIntervals[i].size(); r++) {
+				int row = nervIntervals[i][r];
+				if (NoteInfo[row].notes & firstNote)
+					++lcol;
+				if (NoteInfo[row].notes & secondNote)
+					++rcol;
+			}
+			bool anyzero = lcol == 0 || rcol == 0;
+			o[i] = anyzero
+					 ? 1.f
+					 : sqrt(1 - (static_cast<float>(min(lcol, rcol)) /
+								 static_cast<float>(max(lcol, rcol)) / 4.45f));
+
+			float stupidthing = (static_cast<float>(max(lcol, rcol)) + 2.f) /
+								(static_cast<float>(min(lcol, rcol)) + 1.f);
+			dumbvalue += stupidthing;
+			++dumbcounter;
+
+			CalcClamp(o[i], 0.8f, 1.05f);
+
+			if (logpatterns)
+				cout << "an " << o[i] << endl;
+		}
+	}
+
+	if (SmoothPatterns)
+		PatternSmooth(o);
+	return o;
+}
+
+vector<float>
+Calc::HSDownscaler(const vector<NoteInfo>& NoteInfo)
+{
+	vector<float> o(nervIntervals.size());
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	for (size_t i = 0; i < nervIntervals.size(); i++) {
+		if (nervIntervals[i].empty())
+			o[i] = 1.f;
+		else {
+			int taps = 0;
+			int handtaps = 0;
+			for (size_t r = 0; r < nervIntervals[i].size(); r++) {
+				int row = nervIntervals[i][r];
+				int notes = (NoteInfo[row].notes & left ? 1 : 0) +
+							(NoteInfo[row].notes & down ? 1 : 0) +
+							(NoteInfo[row].notes & up ? 1 : 0) +
+							(NoteInfo[row].notes & right ? 1 : 0);
+				taps += notes;
+				if (notes == 3)
+					handtaps += notes;
+			}
+			o[i] = taps != 0 ? sqrt(sqrt(1 - (static_cast<float>(handtaps) /
+											  static_cast<float>(taps) / 3.f)))
+							 : 1.f;
+
+			if (logpatterns)
+				cout << "hs " << o[i] << endl;
+		}
+	}
+
+	if (SmoothPatterns)
+		PatternSmooth(o);
+	return o;
+}
+
+vector<float>
+Calc::JumpDownscaler(const vector<NoteInfo>& NoteInfo)
+{
+	vector<float> o(nervIntervals.size());
+	int left = 1;
+	int down = 1 << 1;
+	int up = 1 << 2;
+	int right = 1 << 3;
+
+	for (size_t i = 0; i < nervIntervals.size(); i++) {
+		if (nervIntervals[i].empty())
+			o[i] = 1.f;
+		else {
+			int taps = 0;
+			int jamps = 0;
+			for (size_t r = 0; r < nervIntervals[i].size(); r++) {
+				int row = nervIntervals[i][r];
+				int notes = (NoteInfo[row].notes & left ? 1 : 0) +
+							(NoteInfo[row].notes & down ? 1 : 0) +
+							(NoteInfo[row].notes & up ? 1 : 0) +
+							(NoteInfo[row].notes & right ? 1 : 0);
+				taps += notes;
+				if (notes == 2)
+					jamps += notes;
+			}
+			o[i] = taps != 0 ? sqrt(sqrt(1 - (static_cast<float>(jamps) /
+											  static_cast<float>(taps) / 6.f)))
+							 : 1.f;
+
+			if (logpatterns)
+				cout << "ju " << o[i] << endl;
+		}
+	}
+	if (SmoothPatterns)
+		PatternSmooth(o);
+	return o;
+}
+
+vector<float>
+Calc::RollDownscaler(Finger f1, Finger f2)
+{
+	vector<float> o(f1.size());
+	for (size_t i = 0; i < f1.size(); i++) {
+		if (f1[i].empty() && f2[i].empty())
+			o[i] = 1.f;
+		else {
+			vector<float> cvint;
+			for (size_t ii = 0; ii < f1[i].size(); ii++)
+				cvint.emplace_back(f1[i][ii]);
+			for (size_t ii = 0; ii < f2[i].size(); ii++)
+				cvint.emplace_back(f2[i][ii]);
+
+			float mmm = mean(cvint);
+
+			for (size_t i = 0; i < cvint.size(); ++i)
+				cvint[i] = mmm / cvint[i] < 0.6f ? mmm : cvint[i];
+
+			if (cvint.size() == 1) {
+				o[i] = 1.f;
+				continue;
+			}
+
+			float dacv = cv(cvint);
+			if (dacv >= 0.15)
+				o[i] = sqrt(sqrt(0.85f + dacv));
+			else
+				o[i] = pow(0.85f + dacv, 3);
+			CalcClamp(o[i], 0.f, 1.075f);
+
+			if (logpatterns)
+				cout << "ro " << o[i] << endl;
+		}
+	}
+
+	if (SmoothPatterns)
+		PatternSmooth(o);
+
+	return o;
+}
+
 void
-CalcInternal(float& gotpoints,
-			 float& x,
-			 const int ss,
-			 const bool stam,
-			 Calc& calc,
-			 const int hand,
-			 const bool debug = false)
+Calc::Purge()
 {
-	if (stam) {
-		StamAdjust(x, ss, calc, hand);
-	}
+	vector<float> tmp1;
+	vector<float> tmp2;
+	vector<float> tmp3;
+	vector<float> tmp4;
 
-	// final difficulty values to use
-	const std::vector<float>* v =
-	  &(stam ? calc.stam_adj_diff : calc.base_adj_diff.at(hand).at(ss));
-	auto pointloss_pow_val = 1.7F;
-	if (ss == Skill_Chordjack) {
-		pointloss_pow_val = 1.7F;
-	} else if (ss == Skill_Technical) {
-		pointloss_pow_val = 2.F;
-	}
+	j0.swap(tmp1);
+	j1.swap(tmp2);
+	j2.swap(tmp3);
+	j3.swap(tmp4);
 
-	// i don't like the copypasta either but the boolchecks where
-	// they were were too slow
-	if (debug) {
-		// final debug output should always be with stam activated
-		StamAdjust(x, ss, calc, hand, true);
-		for (auto i = 0; i < calc.numitv; ++i) {
-			calc.debugMSD.at(hand).at(ss).at(i) = (*v).at(i);
-		}
+	j0.shrink_to_fit();
+	j1.shrink_to_fit();
+	j2.shrink_to_fit();
+	j3.shrink_to_fit();
 
-		for (auto i = 0; i < calc.numitv; ++i) {
-			const auto pts = static_cast<float>(calc.itv_points.at(hand).at(i));
-			calc.debugValues.at(hand)[2][Pts].at(i) = pts;
-			if (x < (*v).at(i)) {
-				const auto lostpoints =
-				  (pts - (pts * fastpow(x / (*v).at(i), pointloss_pow_val)));
-				gotpoints -= lostpoints;
-				calc.debugPtLoss.at(hand).at(ss).at(i) = abs(lostpoints);
-			}
-		}
-	} else {
-		for (auto i = 0; i < calc.numitv; ++i) {
-			if (x < (*v).at(i)) {
-				const auto pts =
-				  static_cast<float>(calc.itv_points.at(hand).at(i));
-				gotpoints -=
-				  (pts - (pts * fastpow(x / (*v).at(i), pointloss_pow_val)));
-			}
-		}
-	}
+	vector<float> l1;
+	vector<float> l2;
+	vector<float> l3;
+	vector<float> l4;
+	vector<float> l5;
+
+	left_hand.ohjumpscale.swap(l1);
+	left_hand.anchorscale.swap(l2);
+	left_hand.rollscale.swap(l3);
+	left_hand.hsscale.swap(l4);
+	left_hand.jumpscale.swap(l5);
+
+	left_hand.ohjumpscale.shrink_to_fit();
+	left_hand.anchorscale.shrink_to_fit();
+	left_hand.rollscale.shrink_to_fit();
+	left_hand.hsscale.shrink_to_fit();
+	left_hand.jumpscale.shrink_to_fit();
+
+	vector<float> r1;
+	vector<float> r2;
+	vector<float> r3;
+	vector<float> r4;
+	vector<float> r5;
+
+	right_hand.ohjumpscale.swap(l1);
+	right_hand.anchorscale.swap(l2);
+	right_hand.rollscale.swap(l3);
+	right_hand.hsscale.swap(l4);
+	right_hand.jumpscale.swap(l5);
+
+	right_hand.ohjumpscale.shrink_to_fit();
+	right_hand.anchorscale.shrink_to_fit();
+	right_hand.rollscale.shrink_to_fit();
+	right_hand.hsscale.shrink_to_fit();
+	right_hand.jumpscale.shrink_to_fit();
 }
 
-auto
-Calc::InitializeHands(const std::vector<NoteInfo>& NoteInfo,
-					  const float music_rate,
-					  const float offset) -> bool
-{
-	// do we skip this file?
-	if (fast_walk_and_check_for_skip(NoteInfo, music_rate, *this, offset))
-		return true;
-
-	// ulbu calculates everything needed for the block below
-	// (mostly patternmods)
-	thread_local TheGreatBazoinkazoinkInTheSky ulbu_that_which_consumes_all(
-	  *this);
-
-	// reset ulbu patternmod structs
-	// run agnostic patternmod/sequence loop
-	// run dependent patternmod/sequence loop
-	ulbu_that_which_consumes_all();
-
-	// loop over hands to set adjusted difficulties using the patternmods
-	for (const auto& hand : both_hands) {
-		InitAdjDiff(*this, hand);
-
-		// post pattern mod smoothing for cj
-		// (Chordjack related tuning done: this is disabled for now)
-		// Smooth(base_adj_diff.at(hand).at(Skill_Chordjack), 1.F, numitv);
-	}
-
-	// debug info loop
-	if (debugmode) {
-		for (const auto& hand : both_hands) {
-			// pattern mods and base msd never change, set debug
-			// output for them now
-
-			// 3 = number of different debug types
-			debugValues.at(hand).resize(3);
-			debugValues.at(hand)[0].resize(NUM_CalcPatternMod);
-			debugValues.at(hand)[1].resize(NUM_CalcDiffValue);
-			debugValues.at(hand)[2].resize(NUM_CalcDebugMisc);
-
-			// pattern mods first
-			for (auto pmod = 0; pmod < NUM_CalcPatternMod; ++pmod) {
-				debugValues.at(hand)[0][pmod].resize(numitv);
-
-				for (auto itv = 0; itv < numitv; ++itv) {
-					debugValues.at(hand)[0][pmod][itv] =
-					  pmod_vals.at(hand).at(pmod).at(itv);
-				}
-			}
-
-			// set the base diffs - everything but final adjusted values
-			for (auto diff = 0; diff < NUM_CalcDiffValue - 1; ++diff) {
-				debugValues.at(hand)[1][diff].resize(numitv);
-
-				for (auto itv = 0; itv < numitv; ++itv) {
-					debugValues.at(hand)[1][diff][itv] =
-					  init_base_diff_vals.at(hand).at(diff).at(itv);
-				}
-			}
-		}
-	}
-
-	return false;
-}
-
-/* pbm = point buffer multiplier, or basically starting with a max points some
- * degree above the actual max points as a cheap hack to water down some of the
- * absurd scaling hs/js/cj had. Note: do not set these values below 1 */
-constexpr float tech_pbm = 1.F;
-constexpr float jack_pbm = 1.0175F;
-constexpr float stream_pbm = 1.01F;
-constexpr float bad_newbie_skillsets_pbm = 1.F;
-
-// each skillset should just be a separate calc function [todo]
-auto
-Calc::Chisel(const float player_skill,
-			 const float resolution,
-			 const float score_goal,
-			 const Skillset ss,
-			 const bool stamina,
-			 const bool debugoutput) -> float
-{
-	// overall and stamina are calculated differently
-	if (ss == Skill_Overall || ss == Skill_Stamina) {
-		return min_rating;
-	}
-
-	const auto reqpoints = MaxPoints * score_goal;
-	const auto max_slap_dash_jack_cap_hack_tech_hat = MaxPoints * 0.1F;
-
-	// function to get points for skill determining loop below
-	auto calc_gotpoints = [&](float curr_player_skill) -> float {
-		auto gotpoints = 0.F;
-		switch (ss) {
-			case Skill_Technical:
-				gotpoints = MaxPoints * tech_pbm;
-				break;
-			case Skill_JackSpeed:
-				gotpoints = MaxPoints * jack_pbm;
-				break;
-			case Skill_Stream:
-				gotpoints = MaxPoints * stream_pbm;
-				break;
-			case Skill_Jumpstream:
-			case Skill_Handstream:
-			case Skill_Chordjack:
-				gotpoints = MaxPoints * bad_newbie_skillsets_pbm;
-				break;
-			default:
-				assert(0);
-				break;
-		}
-		for (const auto& hand : both_hands) {
-			/* only run the other hand if we're still above the
-			 * reqpoints, if we're already below, there's no
-			 * point. i.e. we're so far below the skill
-			 * benchmark it's impossible to reach the goal after
-			 * just the first hand's losses are totaled */
-			if (true /*gotpoints > reqpoints*/) {
-				if (ss == Skill_JackSpeed) {
-					gotpoints -=
-					  jackloss(curr_player_skill, *this, hand, stamina);
-				} else {
-					CalcInternal(
-					  gotpoints, curr_player_skill, ss, stamina, *this, hand);
-				}
-				if (ss == Skill_Technical) {
-					gotpoints -= fastsqrt(min(
-					  max_slap_dash_jack_cap_hack_tech_hat,
-					  jackloss(curr_player_skill * 0.75F, *this, hand, stamina) *
-						0.85F));
-				}
-			}
-		}
-		return gotpoints;
-	};
-
-	float gotpoints;
-	float curr_player_skill = player_skill;
-	float curr_resolution = resolution;
-
-	do {
-		if (curr_player_skill > max_rating) {
-			return min_rating;
-		}
-
-		curr_player_skill += curr_resolution;
-		gotpoints = calc_gotpoints(curr_player_skill);
-	} while (gotpoints < reqpoints);
-	curr_player_skill -= curr_resolution; // We're too high. Undo our last move.
-	curr_resolution /= 2;
-
-	for (auto iter = 1; iter <= 7; iter++) { // Refine
-		if (curr_player_skill > max_rating) {
-			return min_rating;
-		}
-		curr_player_skill += curr_resolution;
-		gotpoints = calc_gotpoints(curr_player_skill);
-		if (gotpoints > reqpoints) {
-			curr_player_skill -=
-			  curr_resolution; // We're too high. Undo our last move.
-		}
-		curr_resolution /= 2.F;
-	}
-
-	/* these are the values for msd/stam adjusted msd/pointloss the
-	 * latter two are dependent on player_skill and so should only
-	 * be recalculated with the final value already determined for
-	 * clarification, player_skill value being passed into here is
-	 * the final value we've determined */
-	if (debugoutput) {
-		// also keep it in mind that the skillset passed here is
-		// the highest stam adjusted skillset
-		for (const auto& hand : both_hands) {
-			debugValues.at(hand)[2][StamMod].resize(numitv);
-			debugValues.at(hand)[2][StamMod].assign(numitv, 0.F);
-			debugValues.at(hand)[2][Pts].resize(numitv);
-			debugValues.at(hand)[2][Pts].assign(numitv, 0.F);
-			debugValues.at(hand)[2][PtLoss].resize(numitv);
-			debugValues.at(hand)[2][PtLoss].assign(numitv, 0.F);
-			debugValues.at(hand)[1][MSD].resize(numitv);
-			debugValues.at(hand)[1][MSD].assign(numitv, 0.F);
-			debugMSD.at(hand).at(ss).resize(numitv);
-			debugMSD.at(hand).at(ss).assign(numitv, 0.F);
-			debugPtLoss.at(hand).at(ss).resize(numitv);
-			debugPtLoss.at(hand).at(ss).assign(numitv, 0.F);
-			debugTotalPatternMod.at(hand).at(ss).resize(numitv);
-			debugTotalPatternMod.at(hand).at(ss).assign(numitv, 0.F);
-
-			// fills MSD, Pts, PtLoss debugValues
-			CalcInternal(gotpoints,
-						 curr_player_skill,
-						 ss,
-						 stamina,
-						 *this,
-						 hand,
-						 debugoutput);
-
-			// fills jack_loss debug values
-			jackloss(curr_player_skill, *this, hand, stamina, debugoutput);
-
-			/* set total pattern mod value (excluding stam for now), essentially
-			 * this value is the cumulative effect of pattern mods on base nps
-			 * for everything but tech, and base tech for tech, this isn't 1:1
-			 * for intervals because there may be some discrepancies due to
-			 * things like smoothing */
-
-			// techbase
-			if (ss == Skill_Technical) {
-				for (auto i = 0; i < numitv; ++i) {
-					debugTotalPatternMod.at(hand).at(ss).at(i) =
-					  base_adj_diff.at(hand)[TechBase].at(i) /
-					  init_base_diff_vals.at(hand)[TechBase].at(i);
-				}
-			} else if (ss == Skill_JackSpeed) {
-				// no pattern mods atm
-			} else if (ss == Skill_Chordjack) {
-				for (auto i = 0; i < numitv; ++i) {
-					debugTotalPatternMod.at(hand).at(ss).at(i) =
-					  base_adj_diff.at(hand).at(ss).at(i) /
-					  //init_base_diff_vals.at(hand)[CJBase].at(i);
-					  init_base_diff_vals.at(hand)[NPSBase].at(i);
-				}
-			} else {
-				// everything else uses nps base
-				for (auto i = 0; i < numitv; ++i) {
-					debugTotalPatternMod.at(hand).at(ss).at(i) =
-					  base_adj_diff.at(hand).at(ss).at(i) /
-					  init_base_diff_vals.at(hand)[NPSBase].at(i);
-				}
-			}
-		}
-	}
-
-	return curr_player_skill + 2.F * curr_resolution;
-}
-
-/* The new way we wil attempt to differentiate skillsets rather than using
- * normalizers is by detecting whether or not we think a file is mostly
- * comprised of a given pattern, producing a downscaler that slightly buffs
- * up those files and produces a downscaler for files not detected of that
- * type. the major potential failing of this system is that it ends up such
- * that the rating is tied directly to whether or not a file can be more or
- * less strongly determined to be of a pattern type, e.g. splithand trills
- * being marked as more "js" than actual js, for the moment these modifiers
- * are still built on proportion of taps in chords / total taps, but there's
- * a lot more give than their used to be. they should be re-done as
- * sequential detection for best effect but i don't know if that will be
- * necessary for basic tuning if we don't do this files may end up
- * misclassing hard and polluting leaderboards, and good scores on overrated
- * files will simply produce high ratings in every category */
-inline void
-Calc::InitAdjDiff(Calc& calc, const int& hand)
-{
-	static const std::array<std::vector<int>, NUM_Skillset> pmods_used = { {
-	  // overall, nothing, don't handle here
-	  {},
-
-	  // stream
-	  {
-		Stream,
-		OHTrill,
-		VOHTrill,
-		Roll,
-		Chaos,
-		WideRangeRoll,
-		WideRangeJumptrill,
-		WideRangeJJ,
-		FlamJam,
-		// OHJumpMod,
-		// Balance,
-		// RanMan,
-		// WideRangeBalance,
-	  },
-
-	  // js
-	  {
-		JS,
-		// OHJumpMod,
-		// Chaos,
-		// Balance,
-		// TheThing,
-		// TheThing2,
-		WideRangeBalance,
-		WideRangeJumptrill,
-		WideRangeJJ,
-		// WideRangeRoll,
-		// OHTrill,
-		VOHTrill,
-		// Roll,
-		RollJS,
-		// RanMan,
-		FlamJam,
-		// WideRangeAnchor,
-	  },
-
-	  // hs
-	  {
-		HS,
-		OHJumpMod,
-		TheThing,
-		// WideRangeAnchor,
-		WideRangeRoll,
-		WideRangeJumptrill,
-		WideRangeJJ,
-		OHTrill,
-		VOHTrill,
-		// Roll,
-		// RanMan,
-		FlamJam,
-	  	HSDensity,
-	  },
-
-	  // stam, nothing, don't handle here
-	  {},
-
-	  // jackspeed, doesn't use pmods (atm)
-	  {},
-
-	  // chordjack
-	  {
-		CJ,
-		// CJDensity,
-		CJOHJump,
-		CJOHAnchor,
-		VOHTrill,
-		// WideRangeAnchor,
-	  	FlamJam, // you may say, why? why not?
-		// WideRangeJJ,
-		WideRangeJumptrill,
-	  },
-
-	  // tech, duNNO wat im DOIN
-	  {
-		OHTrill,
-		VOHTrill,
-		Balance,
-		Roll,
-		// OHJumpMod,
-		Chaos,
-		WideRangeJumptrill,
-		WideRangeJJ,
-		WideRangeBalance,
-		WideRangeRoll,
-		FlamJam,
-		// RanMan,
-		Minijack,
-		// WideRangeAnchor,
-		TheThing,
-		TheThing2,
-	  },
-	} };
-
-	std::array<float, NUM_Skillset> pmod_product_cur_interval = {};
-
-	// ok this loop is pretty wack i know, for each interval
-	for (size_t i = 0; i < static_cast<size_t>(calc.numitv); ++i) {
-		pmod_product_cur_interval.fill(1.F);
-
-		/* total pattern mods for each skillset, we want this to be
-		 * calculated before the main skillset loop because we might
-		 * want access to the total js mod while on stream, or
-		 * something */
-		for (auto ss = 0; ss < NUM_Skillset; ++ss) {
-
-			// is this even faster than multiplying 1.f by 1.f a billion times?
-			if (ss == Skill_Overall || ss == Skill_Stamina) {
-				continue;
-			}
-
-			for (const auto& pmod : pmods_used.at(ss)) {
-				pmod_product_cur_interval.at(ss) *=
-				  calc.pmod_vals.at(hand).at(pmod).at(i);
-			}
-		}
-
-		// main loop, for each skillset that isn't overall or stam
-		for (auto ss = 0; ss < NUM_Skillset; ++ss) {
-			if (ss == Skill_Overall || ss == Skill_Stamina) {
-				continue;
-			}
-
-			// reference to diff values in vectors
-			auto* adj_diff = &(calc.base_adj_diff.at(hand).at(ss).at(i));
-			auto* stam_base =
-			  &(calc.base_diff_for_stam_mod.at(hand).at(ss).at(i));
-
-			// nps adjusted by pmods
-			const auto adj_npsbase =
-			  calc.init_base_diff_vals.at(hand).at(NPSBase).at(i) *
-			  pmod_product_cur_interval.at(ss) * basescalers.at(ss);
-
-			// start diff values at adjusted nps base
-			*adj_diff = adj_npsbase;
-			*stam_base = adj_npsbase;
-			switch (ss) {
-				// do funky special case stuff here
-				case Skill_Stream:
-					break;
-
-				/* test calculating stam for js/hs on max js/hs diff, also we
-				 * want hs to count against js so they are mutually exclusive,
-				 * don't know how this functionally interacts with the stam base
-				 * stuff, but it might be one reason why js is more problematic
-				 * than hs? */
-				case Skill_Jumpstream: {
-					*adj_diff /= max<float>(calc.pmod_vals.at(hand).at(HS).at(i), 1.F);
-					*adj_diff /=
-					  fastsqrt(calc.pmod_vals.at(hand).at(OHJumpMod).at(i) * 0.95F);
-
-					auto a = *adj_diff;
-					auto b = calc.init_base_diff_vals.at(hand).at(NPSBase).at(i) *
-							 pmod_product_cur_interval[Skill_Handstream];
-					*stam_base = max<float>(a, b);
-				} break;
-				case Skill_Handstream: {
-
-					// adj_diff /=
-					// fastsqrt(doot.at(hi).at(OHJump).at(i));
-					auto a = adj_npsbase;
-					auto b = calc.init_base_diff_vals.at(hand).at(NPSBase).at(i) *
-							 pmod_product_cur_interval[Skill_Jumpstream];
-					*stam_base = max<float>(a, b);
-				} break;
-				case Skill_JackSpeed:
-					break;
-				case Skill_Chordjack:
-					/*
-					*adj_diff =
-					  calc.init_base_diff_vals.at(hand).at(CJBase).at(i) *
-					  basescalers.at(Skill_Chordjack) *
-					  pmod_product_cur_interval[Skill_Chordjack];
-					// we leave stam_base alone here, still based on nps
-					*/
-					break;
-				case Skill_Technical:
-					*adj_diff =
-					  calc.init_base_diff_vals.at(hand).at(TechBase).at(i) *
-					  pmod_product_cur_interval.at(ss) * basescalers.at(ss) /
-					  max<float>(
-						fastpow(calc.pmod_vals.at(hand).at(CJ).at(i)+0.05F, 2.F),
-						1.F);
-					*adj_diff *=
-					  fastsqrt(calc.pmod_vals.at(hand).at(OHJumpMod).at(i));
-					break;
-				default:
-					break;
-			}
-		}
-	}
-}
-
-inline void
-make_debug_strings(const Calc& calc, std::vector<std::string>& debugstrings)
-{
-	debugstrings.resize(calc.numitv);
-
-	for (auto itv = 0; itv < calc.numitv; ++itv) {
-		std::string itvstring;
-
-		for (auto row = 0; row < calc.itv_size.at(itv); ++row) {
-			const auto& ri = calc.adj_ni.at(itv).at(row);
-
-			itvstring.append(make_note_mapping(4, ri.row_notes));
-			itvstring.append("\n");
-		}
-
-		if (!itvstring.empty()) {
-			itvstring.pop_back();
-		}
-
-		debugstrings.at(itv) = itvstring;
-	}
-}
+static const float ssrcap = 0.965f; // cap SSR at 96% so things don't get out of hand YES WE ACTUALLY NEED THIS FFS
 
 // Function to generate SSR rating
-auto
-MinaSDCalc(const std::vector<NoteInfo>& NoteInfo,
-		   const float musicrate,
-		   const float goal,
-		   Calc* calc) -> std::vector<float>
+vector<float>
+MinaSDCalc(const vector<NoteInfo>& NoteInfo,
+		   float musicrate,
+		   float goal)
 {
-	if (NoteInfo.size() <= 1) {
-		return dimples_the_all_zero_output;
-	}
-	calc->ssr = true;
-	calc->debugmode = false;
+	vector<float> o;
 
-	return calc->CalcMain(NoteInfo, musicrate, min(goal, ssr_goal_cap));
+	thread_local unique_ptr<Calc> doot = make_unique<Calc>();
+	doot->MusicRate = musicrate;
+	CalcClamp(
+	  goal, 0.f, ssrcap);
+	doot->Scoregoal = goal;
+	o = doot->CalcMain(NoteInfo, musicrate, min(goal, ssrcap));
+
+	doot->Purge();
+
+	return o;
 }
 
 // Wrap difficulty calculation for all standard rates
-auto
-MinaSDCalc(const std::vector<NoteInfo>& NoteInfo, Calc* calc) -> MinaSD
+MinaSD
+MinaSDCalc(const vector<NoteInfo>& NoteInfo)
 {
-	MinaSD allrates;
-	const auto lower_rate = 7; // 0.7x
-	const auto upper_rate = 21; // up to 2.1x (not including 2.1x)
 
-	if (NoteInfo.size() > 1) {
-		calc->ssr = false;
-		calc->debugmode = false;
-		for (auto i = lower_rate; i < upper_rate; i++) {
-			allrates.emplace_back(calc->CalcMain(
-			  NoteInfo, static_cast<float>(i) / 10.F, default_score_goal));
+	MinaSD allrates;
+
+	int rateCount = 21;
+
+	if (!NoteInfo.empty()) {
+		for (int i = 7; i < rateCount; i++) {
+			auto tempVal =
+				MinaSDCalc(NoteInfo, i / 10.f, 0.93f);
+			allrates.emplace_back(tempVal);
 		}
 	} else {
-		for (auto i = lower_rate; i < upper_rate; i++) {
-			allrates.emplace_back(dimples_the_all_zero_output);
+		vector<float> o{ 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f, 0.f };
+
+		for (int i = 7; i < rateCount; i++) {
+			allrates.emplace_back(o);
 		}
 	}
 	return allrates;
 }
 
-int mina_calc_version = 505;
-auto
-GetCalcVersion() -> int
+int
+GetCalcVersion()
 {
-	return mina_calc_version;
+	return 263;
 }
