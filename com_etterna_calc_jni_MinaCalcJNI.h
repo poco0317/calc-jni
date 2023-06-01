@@ -15,11 +15,19 @@ JNIEXPORT jstring JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_getCalcVersion
 
 /*
  * Class:     com_etterna_calc_jni_MinaCalcJNI
- * Method:    minaSDCalc
+ * Method:    minaSDCalcFile
  * Signature: (Ljava/lang/String;FF)[F
  */
-JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalc
+JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalcFile
   (JNIEnv *, jobject, jstring, jfloat, jfloat);
+
+/*
+ * Class:     com_etterna_calc_jni_MinaCalcJNI
+ * Method:    minaSDCalcBytes
+ * Signature: (Ljava/lang/String;FF)[F
+ */
+JNIEXPORT jfloatArray JNICALL Java_com_etterna_calc_jni_MinaCalcJNI_minaSDCalcBytes
+  (JNIEnv *, jobject, jbyteArray, jfloat, jfloat);
 
 }
 #endif
